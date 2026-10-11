@@ -288,16 +288,27 @@ func (a App) mouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 	// przyciski
-	if m.Y == l.btnY && wheel == 0 {
+	if wheel == 0 {
 		for i, r := range l.btns {
-			if m.X >= r[0] && m.X < r[1] {
+			if r.has(m.X, m.Y) {
 				a.focus, a.btn = fButtons, i
 				return a.press(a.buttons()[i].id)
 			}
 		}
+	}
+	right := m.X >= l.leftW+l.centerW
+	if m.Y >= l.topH { // dol: ACTIONS | LOG
+		if right && a.ses != nil {
+			a.focus = fCenter
+			if wheel != 0 {
+				a.ses.centerKey(a.center, map[int]string{-1: "up", 1: "down"}[wheel])
+			}
+		} else if !right {
+			a.focus = fButtons
+		}
 		return a, nil
 	}
-	if m.Y >= l.topH || a.ses == nil {
+	if a.ses == nil {
 		return a, nil
 	}
 	s := a.ses
@@ -309,7 +320,7 @@ func (a App) mouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 		} else if m.Y >= 1 && m.Y < l.topH-1 {
 			s.tree.click(m.Y - 1)
 		}
-	case m.X >= l.leftW+l.centerW: // ludzie
+	case right: // ludzie
 		a.focus = fPeople
 		if wheel != 0 {
 			s.peopleKey(map[int]string{-1: "up", 1: "down"}[wheel])
@@ -319,20 +330,13 @@ func (a App) mouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 				s.peerCur = idx[r]
 			}
 		}
-	default: // log / historia
-		if m.Y >= l.logoH {
-			a.focus = fCenter
-			if wheel != 0 {
-				s.centerKey(a.center, map[int]string{-1: "up", 1: "down"}[wheel])
-			}
-		}
 	}
 	return a, nil
 }
 
 func (a App) leave() (tea.Model, tea.Cmd) {
 	if a.ses != nil {
-		a.say(lInfo, "Left session "+sessionName(a.ses.p)+" - it stays in Settings > Sessions")
+		a.say(lInfo, "Left session "+sessionName(a.ses.p)+" - reopen it from Settings")
 	}
 	a.sid++
 	a.ses = nil
@@ -378,12 +382,12 @@ func (a App) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case fButtons:
 		bs := a.buttons()
 		switch k.String() {
-		case "left":
+		case "left", "up":
 			if a.btn > 0 {
 				a.btn--
 			}
 			return a, nil
-		case "right":
+		case "right", "down":
 			if a.btn < len(bs)-1 {
 				a.btn++
 			}
@@ -403,7 +407,7 @@ func (a App) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) nextFocus(dir int) focus {
-	order := []focus{fFiles, fCenter, fPeople, fButtons}
+	order := []focus{fFiles, fPeople, fButtons, fCenter}
 	if a.ses == nil {
 		return fButtons
 	}

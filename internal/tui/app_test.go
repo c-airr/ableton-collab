@@ -263,7 +263,7 @@ func TestEmptyPanel(t *testing.T) {
 	be := &fakeBackend{t: t, me: store.NewDevice("Ja"), net: &fakeNet{}}
 	a := newApp(t, be, Options{})
 	dump(t, a)
-	must(t, a, "FILES", "PEOPLE", "LOG", "Join or host a session", "Join j", "Host h", "Settings o", "No session")
+	must(t, a, "FILES", "PEOPLE", "LOG", "ACTIONS", "Join or host a session", "Join", "Host", "Settings", "no session")
 	if v := view(a); !strings.Contains(v, "▄▀█ █▄▄") {
 		t.Fatalf("no logo:\n%s", v)
 	}
@@ -293,14 +293,14 @@ func TestOpensLastSession(t *testing.T) {
 	a := newApp(t, be, Options{Last: dir})
 	dump(t, a)
 	must(t, a, "FILES · beat", "beat Project", "beat.als ★", "Samples", "Ja  you, host", "Basia", "relay",
-		"Wants to join", "Kolega", "KS776L4", "Kolega wants to join", "Opened session beat", "Save s", "Get changes g")
+		"Wants to join", "Kolega", "KS776L4", "Kolega wants to join", "Opened session beat", "Save", "Get changes", "1 of 1 online")
 	if be.last != dir {
 		t.Errorf("last session not remembered: %q", be.last)
 	}
 	// prosba: zaznacz w PEOPLE i Accept
-	a = press(t, a, "tab", "tab") // FILES -> LOG -> PEOPLE
+	a = press(t, a, "tab") // FILES -> PEOPLE
 	a = press(t, a, "down")
-	must(t, a, "Accept a", "Reject r")
+	must(t, a, "Accept", "Reject", "selected: Kolega")
 	a = press(t, a, "a")
 	if len(net.accepted) != 1 {
 		t.Fatalf("accepted %v", net.accepted)
@@ -308,7 +308,7 @@ func TestOpensLastSession(t *testing.T) {
 	must(t, a, "Kolega accepted")
 	// kick (jestem hostem)
 	a = press(t, a, "up")
-	must(t, a, "Kick k")
+	must(t, a, "Kick", "selected: Basia")
 	a = press(t, a, "k")
 	must(t, a, "Kick Basia?")
 	a = press(t, a, "up", "enter")
@@ -324,19 +324,19 @@ func TestDeleteFile(t *testing.T) {
 	be := &fakeBackend{t: t, me: me, net: &fakeNet{}}
 	a := newApp(t, be, Options{Last: dir})
 	// set sesji nie da sie usunac
-	if strings.Contains(view(a), "Delete x") {
+	if strings.Contains(view(a), "Delete ") {
 		t.Fatal("the session set can be deleted")
 	}
 	a.ses.tree.sel = "Samples/hihat.wav"
 	a.ses.tree.open["Samples"] = true
-	must(t, a, "hihat.wav", "Delete x")
+	must(t, a, "hihat.wav", "Delete ")
 	a = press(t, a, "x")
 	must(t, a, "Delete Samples/hihat.wav?")
 	a = press(t, a, "up", "enter")
 	if _, err := os.Stat(filepath.Join(dir, "Samples", "hihat.wav")); err == nil {
 		t.Fatal("file not deleted")
 	}
-	must(t, a, "You deleted Samples/hihat.wav")
+	mustLog(t, a, "You deleted Samples/hihat.wav")
 }
 
 func TestHostExistingSet(t *testing.T) {
@@ -534,9 +534,10 @@ func TestLogAndHistory(t *testing.T) {
 	// zdarzenia przychodza z long-polla
 	next, cmd := a.Update(a.ses.eventsCmd(a.sid, 0)())
 	a = drive(t, next.(App), cmd)
-	must(t, a, "kick.wav received", "hihat.wav → sending to others", "Kolega connected")
+	mustLog(t, a, "kick.wav received", "hihat.wav → sending to others", "Kolega connected")
+	must(t, a, "kick.wav received")
 	a = press(t, a, "y")
-	must(t, a, "HISTORY", "first version", "Log y")
+	must(t, a, "HISTORY", "first version", " Log ")
 }
 
 func TestVersionGraph(t *testing.T) {
@@ -555,8 +556,8 @@ func TestMouseButtons(t *testing.T) {
 	be := &fakeBackend{t: t, me: store.NewDevice("Ja"), net: &fakeNet{}}
 	a := newApp(t, be, Options{})
 	l := a.layout()
-	x := l.btns[1][0] + 1 // Host
-	next, cmd := a.Update(tea.MouseMsg{X: x, Y: l.btnY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	r := l.btns[1] // Host
+	next, cmd := a.Update(tea.MouseMsg{X: r.x + 2, Y: r.y + 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	a = drive(t, next.(App), cmd)
 	if _, ok := a.dlg.(*hostDialog); !ok {
 		t.Fatalf("click on Host didn't open it:\n%s", view(a))
@@ -594,5 +595,20 @@ func TestPianoRoll(t *testing.T) {
 	}
 	if os.Getenv("TUI_DUMP") != "" {
 		t.Log("\n" + strings.Join(lines, "\n"))
+	}
+}
+
+// mustLog: wpis w logu sesji (na ekranie dlugie wpisy sa zawijane).
+func mustLog(t *testing.T, a App, want ...string) {
+	t.Helper()
+	var all []string
+	for _, l := range a.ses.log {
+		all = append(all, l.text)
+	}
+	joined := strings.Join(all, "\n")
+	for _, w := range want {
+		if !strings.Contains(joined, w) {
+			t.Fatalf("no %q in log:\n%s", w, joined)
+		}
 	}
 }

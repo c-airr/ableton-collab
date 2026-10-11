@@ -60,29 +60,39 @@ func levelStyle(l level) lipgloss.Style {
 // --- uklad ---------------------------------------------------------------------------------
 
 // layout: wymiary i pozycje - wspolne dla rysowania i myszy.
+//
+//	FILES            | logo + status | PEOPLE
+//	ACTIONS (przyciski)              | LOG / HISTORY
 type layout struct {
 	w, h                   int
-	topH                   int
+	topH, botH             int
 	leftW, centerW, rightW int
-	logoH                  int // wiersze logo + podpis nad panelem logu
-	btnY, statusY          int
-	btns                   [][2]int // zakres x przyciskow
+	btns                   []rect // przyciski w panelu ACTIONS (pozycje bezwzgledne)
 }
 
+type rect struct{ x, y, w, h int }
+
+func (r rect) has(x, y int) bool { return x >= r.x && x < r.x+r.w && y >= r.y && y < r.y+r.h }
+
+const btnH = 3
+
 func (a App) layout() layout {
-	l := layout{w: max(60, a.w), h: max(18, a.h)}
-	l.statusY = l.h - 1
-	l.btnY = l.h - 2
-	l.topH = l.h - 2
-	l.leftW = clamp(l.w*30/100, 22, 46)
-	l.rightW = clamp(l.w*27/100, 22, 40)
+	l := layout{w: max(60, a.w), h: max(20, a.h)}
+	l.topH = max(12, l.h/2)
+	l.botH = l.h - l.topH
+	l.leftW = clamp(l.w*28/100, 22, 44)
+	l.rightW = clamp(l.w*32/100, 26, 52)
 	l.centerW = l.w - l.leftW - l.rightW
-	l.logoH = len(a.logo(l.centerW)) + 2
-	x := 1
+	// przyciski: bloki po 3 wiersze, zawijane do nastepnego rzedu
+	inner := l.leftW + l.centerW - 4
+	x, y := 0, 1
 	for _, b := range a.buttons() {
-		bw := lipgloss.Width(buttonText(b))
-		l.btns = append(l.btns, [2]int{x, x + bw})
-		x += bw + 1
+		bw := buttonW(b)
+		if x > 0 && x+bw > inner {
+			x, y = 0, y+btnH+1
+		}
+		l.btns = append(l.btns, rect{x: 2 + x, y: l.topH + 1 + y, w: bw, h: btnH})
+		x += bw + 2
 	}
 	return l
 }
@@ -91,16 +101,22 @@ func clamp(v, lo, hi int) int { return max(lo, min(v, hi)) }
 
 func (a App) View() string {
 	l := a.layout()
-	var top string
-	if a.dlg != nil {
-		top = a.dialogArea(l)
-	} else {
-		left := box(a.filesTitle(), a.filesLines(l), l.leftW, l.topH, a.focus == fFiles && a.ses != nil)
-		mid := a.centerView(l)
-		right := box(a.peopleTitle(), a.peopleLines(l), l.rightW, l.topH, a.focus == fPeople && a.ses != nil)
-		top = lipgloss.JoinHorizontal(lipgloss.Top, left, mid, right)
+	top := lipgloss.JoinHorizontal(lipgloss.Top,
+		box(a.filesTitle(), a.filesLines(l), l.leftW, l.topH, a.focus == fFiles && a.ses != nil),
+		a.centerView(l),
+		box(a.peopleTitle(), a.peopleLines(l), l.rightW, l.topH, a.focus == fPeople && a.ses != nil))
+	logTitle, logLines := "LOG", a.logLines(l.rightW-4, l.botH-2)
+	if a.center == cHistory {
+		logTitle, logLines = "HISTORY", a.historyLines(l.rightW-4, l.botH-2)
 	}
-	return top + "\n" + a.buttonsLine(l) + "\n" + a.statusLine(l)
+	bottom := lipgloss.JoinHorizontal(lipgloss.Top,
+		box("ACTIONS", a.actionsLines(l), l.leftW+l.centerW, l.botH, a.focus == fButtons && a.dlg == nil),
+		box(logTitle, logLines, l.rightW, l.botH, a.focus == fCenter && a.ses != nil))
+	screen := top + "\n" + bottom
+	if a.dlg != nil {
+		screen = a.overlay(l, screen)
+	}
+	return screen
 }
 
 // box: panel z ramka i tytulem w ramce, dokladnie w x h.
@@ -126,28 +142,30 @@ func box(title string, lines []string, w, h int, focused bool) string {
 	return strings.Join(out, "\n")
 }
 
-// dialogArea: okno na srodku obszaru paneli.
-func (a App) dialogArea(l layout) string {
+// overlay: okno na srodku ekranu, panel pod spodem przyciemniony.
+func (a App) overlay(l layout, screen string) string {
 	f := a.dlg.form(&a)
 	b, _, _ := f.render(l.w)
 	x0, y0 := dialogPos(l, b)
-	lines := strings.Split(b, "\n")
-	out := make([]string, l.topH)
-	for i := range out {
-		if j := i - y0; j >= 0 && j < len(lines) {
-			out[i] = pad(strings.Repeat(" ", x0)+lines[j], l.w)
-		} else {
-			out[i] = strings.Repeat(" ", l.w)
+	bl := strings.Split(b, "\n")
+	lines := strings.Split(screen, "\n")
+	faint := lipgloss.NewStyle().Foreground(cLine)
+	for i, ln := range lines {
+		bg := faint.Render(ansi.Strip(ln))
+		if j := i - y0; j >= 0 && j < len(bl) {
+			bw := lipgloss.Width(bl[j])
+			bg = ansi.Truncate(bg, x0, "") + bl[j] + ansi.TruncateLeft(bg, x0+bw, "")
 		}
+		lines[i] = bg
 	}
-	return strings.Join(out, "\n")
+	return strings.Join(lines, "\n")
 }
 
 func dialogPos(l layout, box string) (int, int) {
-	return max(0, (l.w-lipgloss.Width(box))/2), max(0, (l.topH-lipgloss.Height(box))/2)
+	return max(0, (l.w-lipgloss.Width(box))/2), max(0, (l.h-lipgloss.Height(box))/2)
 }
 
-// --- logo i srodek ---------------------------------------------------------------------------
+// --- logo i status ---------------------------------------------------------------------------
 
 var logoBig = []string{
 	"▄▀█ █▄▄ █   █▀▀ ▀█▀ █▀█ █▄ █",
@@ -164,41 +182,87 @@ func (a App) logo(w int) []string {
 }
 
 func (a App) centerView(l layout) string {
-	var rows []string
+	center := func(s string) string {
+		return lipgloss.PlaceHorizontal(l.centerW, lipgloss.Center, ansi.Truncate(s, l.centerW-2, "…"))
+	}
+	rows := []string{""}
 	colors := []lipgloss.TerminalColor{cAccent, cAccent, cCyan, cCyan}
 	for i, line := range a.logo(l.centerW) {
-		st := lipgloss.NewStyle().Bold(true).Foreground(colors[i%len(colors)])
-		rows = append(rows, lipgloss.PlaceHorizontal(l.centerW, lipgloss.Center, st.Render(line)))
+		rows = append(rows, center(lipgloss.NewStyle().Bold(true).Foreground(colors[i%len(colors)]).Render(line)))
 	}
-	sub := sDim.Render("no session")
-	if a.ses != nil {
-		sub = sBold.Render(sessionName(a.ses.p)) + sDim.Render("  ·  "+a.ses.p.SetName()+"  ·  "+a.me.Name)
+	rows = append(rows, "")
+	for _, s := range a.statusLines(l.centerW - 4) {
+		rows = append(rows, center(s))
 	}
-	rows = append(rows, lipgloss.PlaceHorizontal(l.centerW, lipgloss.Center, ansi.Truncate(sub, l.centerW-2, "…")), "")
-	h := l.topH - len(rows)
-	title, lines := "LOG", a.logLines(l.centerW-4, h-2)
-	if a.center == cHistory {
-		title, lines = "HISTORY", a.historyLines(l.centerW-4, h-2)
+	for len(rows) < l.topH {
+		rows = append(rows, "")
 	}
-	rows = append(rows, box(title, lines, l.centerW, h, a.focus == fCenter && a.ses != nil))
-	return strings.Join(rows, "\n")
+	for i := range rows {
+		rows[i] = pad(rows[i], l.centerW)
+	}
+	return strings.Join(rows[:l.topH], "\n")
 }
 
-func (a App) logLines(w, h int) []string {
+// statusLines: stan pod logo - sesja, polaczenie i najwazniejsza sprawa teraz.
+func (a App) statusLines(w int) []string {
+	text, lv := a.status()
+	icon := map[level]string{lInfo: "", lOK: "", lWarn: "⚠ ", lErr: "✗ ", lFile: "⇅ "}[lv]
+	msg := []string{}
+	for _, l := range wrapStyled(icon+text, w) {
+		msg = append(msg, levelStyle(lv).Bold(lv != lInfo).Render(l))
+	}
 	if a.ses == nil {
-		return []string{
-			sDim.Render("Join a session with a code from a friend,"),
-			sDim.Render("or Host your own - pick a folder and invite people."),
-		}
+		return append([]string{sDim.Render("no session"), ""}, msg...)
 	}
 	s := a.ses
-	end := max(0, len(s.log)-s.logOff)
-	start := max(0, end-h)
-	var out []string
-	for _, ln := range s.log[start:end] {
-		out = append(out, sDim.Render(ln.at.Format("15:04"))+" "+levelStyle(ln.level).Render(ln.text))
+	out := []string{sBold.Render(sessionName(s.p)) + sDim.Render("  ·  "+s.p.SetName()), a.connLine(), ""}
+	return append(out, msg...)
+}
+
+// connLine: ilu ludzi jest polaczonych.
+func (a App) connLine() string {
+	s := a.ses
+	switch {
+	case s.net == nil:
+		return sDim.Render("○ offline")
+	case s.lobbyErr != nil:
+		return sErr.Render("✗ network problem")
+	case s.lobby == nil:
+		return sDim.Render("○ connecting...")
 	}
-	return out
+	on := 0
+	for _, m := range s.lobby.Members {
+		if m.Connected {
+			on++
+		}
+	}
+	switch {
+	case on > 0:
+		return sOKText.Render(fmt.Sprintf("● connected · %d of %d online", on, len(s.lobby.Members)))
+	case len(s.lobby.Members) > 0:
+		return sWarnText.Render(fmt.Sprintf("○ nobody online (%d in session)", len(s.lobby.Members)))
+	}
+	return sDim.Render("○ just you - Invite someone")
+}
+
+// logLines: ostatnie wpisy logu, dlugie zawijane (panel jest waski).
+func (a App) logLines(w, h int) []string {
+	if a.ses == nil {
+		return []string{sDim.Render("Activity shows up here.")}
+	}
+	var all []string
+	for _, ln := range a.ses.log {
+		st := levelStyle(ln.level)
+		for i, part := range wrapStyled(ln.text, w-6) {
+			prefix := "      "
+			if i == 0 {
+				prefix = sDim.Render(ln.at.Format("15:04")) + " "
+			}
+			all = append(all, prefix+st.Render(part))
+		}
+	}
+	end := max(0, len(all)-a.ses.logOff)
+	return all[max(0, end-h):end]
 }
 
 // historyLines: wersje jak `git log --graph` (najnowsze na gorze).
@@ -422,25 +486,85 @@ func relIcon(r store.Relation) string {
 	return sDim.Render("·")
 }
 
-// --- przyciski i pasek ---------------------------------------------------------------------
+// --- przyciski (panel ACTIONS) ----------------------------------------------------------------
 
-func buttonText(b button) string { return " " + b.label + " " + b.key + " " }
+func buttonW(b button) int { return max(12, lipgloss.Width(b.label)+lipgloss.Width(b.key)+6) }
 
-func (a App) buttonsLine(l layout) string {
-	var parts []string
-	for i, b := range a.buttons() {
-		if a.focus == fButtons && i == a.btn {
-			st := lipgloss.NewStyle().Background(cBtnOn).Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
-			parts = append(parts, st.Render(buttonText(b)))
-			continue
-		}
-		st := lipgloss.NewStyle().Background(cBtn)
-		if b.danger {
-			st = st.Foreground(cBad)
-		}
-		parts = append(parts, st.Render(" "+b.label+" ")+lipgloss.NewStyle().Background(cBtn).Foreground(cDim).Render(b.key+" "))
+// buttonBlock: przycisk jako pelny blok 3 wiersze (jak w wifite).
+func buttonBlock(b button, w int, on bool) []string {
+	bg := lipgloss.NewStyle().Background(cBtn)
+	fg := bg.Foreground(lipgloss.AdaptiveColor{Light: "#111827", Dark: "#F3F4F6"})
+	key := bg.Foreground(cDim)
+	if b.danger {
+		fg = fg.Foreground(cBad)
 	}
-	return " " + strings.Join(parts, " ")
+	if on {
+		bg = lipgloss.NewStyle().Background(cBtnOn)
+		fg = bg.Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+		key = bg.Foreground(lipgloss.Color("#DDD6FE"))
+	}
+	gap := w - 4 - lipgloss.Width(b.label) - lipgloss.Width(b.key)
+	mid := bg.Render("  ") + fg.Render(b.label) + bg.Render(strings.Repeat(" ", max(1, gap))) + key.Render(b.key) + bg.Render("  ")
+	blank := bg.Render(strings.Repeat(" ", w))
+	return []string{blank, mid, blank}
+}
+
+// actionsLines: zawartosc panelu ACTIONS - przyciski (wg pozycji z layout),
+// pod nimi co jest zaznaczone i podpowiedz klawiszy.
+func (a App) actionsLines(l layout) []string {
+	inner, h := l.leftW+l.centerW-4, l.botH-2
+	lines := make([]string, h)
+	bs := a.buttons()
+	for i, r := range l.btns {
+		block := buttonBlock(bs[i], r.w, a.focus == fButtons && i == a.btn && a.dlg == nil)
+		for j, part := range block {
+			y := r.y - l.topH - 1 + j
+			if y < 0 || y >= h {
+				continue
+			}
+			x := r.x - 2
+			lines[y] = pad(lines[y], x) + part
+		}
+	}
+	if sel := a.selection(); sel != "" && h >= 2 {
+		lines[h-2] = sDim.Render("selected: ") + sel
+	}
+	if h >= 1 {
+		lines[h-1] = sDim.Render(ansi.Truncate("tab: next panel · ←→ pick · enter: press · mouse works too", inner, "…"))
+	}
+	return lines
+}
+
+// selection: co jest zaznaczone w aktywnym panelu (dla przyciskow kontekstowych).
+func (a App) selection() string {
+	s := a.ses
+	if s == nil {
+		return ""
+	}
+	switch a.focus {
+	case fFiles:
+		for _, n := range s.tree.all {
+			if n.rel == s.tree.sel {
+				info := humanBytes(n.size)
+				if n.dir {
+					info = fmt.Sprintf("%d files, %s", n.count, humanBytes(n.size))
+				}
+				return n.rel + sDim.Render("  ·  "+info)
+			}
+		}
+	case fPeople:
+		if m := s.selMember(); m != nil {
+			how := "offline"
+			if m.Connected {
+				how = viaLabel(m.Via)
+			}
+			return m.Name + sDim.Render("  ·  "+how+"  ·  "+syncthing.ShortID(m.ID))
+		}
+		if r := s.selRequest(); r != nil {
+			return r.Name + sDim.Render("  ·  wants to join  ·  code "+syncthing.ShortID(r.ID))
+		}
+	}
+	return ""
 }
 
 // status: najwazniejsza rzecz do powiedzenia teraz.
@@ -450,7 +574,7 @@ func (a App) status() (string, level) {
 	}
 	s := a.ses
 	if s == nil {
-		return "No session - Join one with a code from a friend, or Host your own.", lInfo
+		return "Join a friend's session with their code, or Host your own.", lInfo
 	}
 	switch {
 	case s.busy != "" && s.busy != refreshing:
@@ -462,7 +586,7 @@ func (a App) status() (string, level) {
 	}
 	if s.lobby != nil && len(s.lobby.Requests) > 0 {
 		r := s.lobby.Requests[0]
-		return fmt.Sprintf("%s wants to join - select them in PEOPLE and Accept", r.Name), lWarn
+		return fmt.Sprintf("%s wants to join - select them in PEOPLE, then Accept", r.Name), lWarn
 	}
 	if s.st != nil {
 		for _, ps := range s.st.Peers {
@@ -486,15 +610,6 @@ func (a App) status() (string, level) {
 		return fmt.Sprintf("Receiving %d file(s), %s...", s.lobby.Sync.NeedFiles, humanBytes(s.lobby.Sync.NeedBytes)), lFile
 	}
 	return "✓ Everything is up to date", lOK
-}
-
-func (a App) statusLine(l layout) string {
-	text, lv := a.status()
-	icon := map[level]string{lInfo: "ℹ ", lOK: "", lWarn: "⚠ ", lErr: "✗ ", lFile: "⇅ "}[lv]
-	right := "tab: switch panel  "
-	room := l.w - lipgloss.Width(right) - 2
-	msg := " " + ansi.Truncate(icon+text, room, "…")
-	return levelStyle(lv).Bold(lv == lErr || lv == lWarn).Render(pad(msg, l.w-lipgloss.Width(right))) + sDim.Render(right)
 }
 
 // --- pomocnicze ------------------------------------------------------------------------------
