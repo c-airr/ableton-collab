@@ -42,6 +42,9 @@ const Dir = ".abcollab"
 type Device struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// Peer: ID urzadzenia w transporcie (Syncthing) - lobby laczy po nim stan
+	// polaczenia ze stanem wersji. Puste, gdy projekt chodzi bez transportu.
+	Peer string `json:"peer,omitempty"`
 }
 
 type Meta struct {
@@ -162,6 +165,16 @@ func (p *Project) ensureMe() error {
 	return writeJSON(filepath.Join(d, "device.json"), p.Me)
 }
 
+// Announce zapisuje moje device.json (nazwa, ID w transporcie), jesli sie
+// zmienilo - inni widza wtedy, kim jestem, zanim zapisze pierwsza wersje.
+func (p *Project) Announce() error {
+	var cur Device
+	if readJSON(filepath.Join(p.devDir(p.Me.ID), "device.json"), &cur) == nil && cur == p.Me {
+		return nil
+	}
+	return p.ensureMe()
+}
+
 // --- Odczyt -----------------------------------------------------------------------
 
 // Devices zwraca urzadzenia, ktore cos zapisaly w projekcie (lacznie ze mna).
@@ -177,8 +190,11 @@ func (p *Project) Devices() ([]Device, error) {
 		}
 		d := Device{ID: e.Name(), Name: e.Name()}
 		var meta Device
-		if readJSON(filepath.Join(p.devDir(e.Name()), "device.json"), &meta) == nil && meta.Name != "" {
-			d.Name = meta.Name
+		if readJSON(filepath.Join(p.devDir(e.Name()), "device.json"), &meta) == nil {
+			if meta.Name != "" {
+				d.Name = meta.Name
+			}
+			d.Peer = meta.Peer
 		}
 		out = append(out, d)
 	}

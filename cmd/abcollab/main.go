@@ -1,9 +1,12 @@
 // abcollab - wspolna praca nad projektem Ableton Live.
 //
-// Na tym etapie bez transportu: historia wersji lezy w folderze projektu
-// (.abcollab/), a przenosi ja cokolwiek, co synchronizuje folder.
+// Historia wersji lezy w folderze projektu (.abcollab/), a miedzy komputerami
+// przenosi ja dolaczony Syncthing (pobierany przy pierwszym uruchomieniu).
+// Z -offline dziala bez sieci - folder przenosi wtedy dowolny sync.
 //
 //	abcollab                    interfejs terminalowy (TUI)
+//	abcollab join <kod>         dolacz do projektu kodem zaproszenia
+//	abcollab invite             wypisz kod zaproszenia do projektu
 //	abcollab init <set.als>     zaloz projekt w biezacym folderze
 //	abcollab status             moja wersja, niezapisane zmiany, inni
 //	abcollab commit             zapisz plik seta jako nowa wersje
@@ -27,6 +30,7 @@ import (
 	"github.com/c-airr/ableton-collab/als"
 	"github.com/c-airr/ableton-collab/internal/tui"
 	"github.com/c-airr/ableton-collab/store"
+	"github.com/c-airr/ableton-collab/transport/syncthing"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -34,7 +38,9 @@ import (
 func usage() {
 	fmt.Fprintln(os.Stderr, `uzycie: abcollab [komenda] [-C folder] [opcje]
 
-  (bez komendy)       interfejs terminalowy (TUI)
+  (bez komendy)       interfejs terminalowy (TUI); -offline: bez sieci
+  join <kod>          dolacz do projektu kodem zaproszenia
+  invite              wypisz kod zaproszenia (prosby przyjmujesz w TUI)
   init <set.als>      zaloz projekt w folderze z setem
   status              moja wersja, niezapisane zmiany, inni uczestnicy
   commit              zapisz aktualny set jako nowa wersje
@@ -57,10 +63,21 @@ func main() {
 	var err error
 	switch cmd {
 	case "tui":
-		err = withProject(fs, dir, args, func(p *store.Project) error {
-			_, err := tea.NewProgram(tui.New(p), tea.WithAltScreen()).Run()
-			return err
-		})
+		offline := fs.Bool("offline", false, "bez sieci (bez Syncthinga)")
+		fs.Parse(args)
+		err = runTUI(*dir, *offline, "")
+	case "join":
+		var code string
+		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+			code, args = args[0], args[1:]
+		}
+		fs.Parse(args)
+		if code == "" {
+			code = strings.Join(fs.Args(), "")
+		}
+		err = runTUI("", false, code)
+	case "invite":
+		err = withProject(fs, dir, args, cmdInvite)
 	case "init":
 		err = cmdInit(fs, dir, args)
 	case "status":
@@ -160,6 +177,140 @@ func cmdWhoami(name string) error {
 	return nil
 }
 
+// --- siec i TUI -------------------------------------------------------------------
+
+func startNode(d *store.Device) (*syncthing.Node, error) {
+	dir, err := configDir()
+	if err != nil {
+		return nil, err
+	}
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return nil, err
+	}
+	exe, err := syncthing.Ensure(filepath.Join(cache, "abcollab"), func(s string) { fmt.Fprintln(os.Stderr, s) })
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintln(os.Stderr, "uruchamianie Syncthinga...")
+	n, err := syncthing.Start(syncthing.Options{Home: filepath.Join(dir, "syncthing"), Exe: exe, Name: d.Name})
+	if err != nil {
+		return nil, err
+	}
+	if d.Peer != n.ID {
+		d.Peer = n.ID
+		if err := saveDevice(filepath.Join(dir, "device.json"), *d); err != nil {
+			n.Stop()
+			return nil, err
+		}
+	}
+	return n, nil
+}
+
+// share udostepnia projekt w Syncthingu i oglasza moje ID transportu w projekcie.
+func share(n *syncthing.Node, p *store.Project) (*syncthing.Project, error) {
+	sh, err := n.Share(p.Dir, syncthing.FolderID(p.Meta.ID), strings.TrimSuffix(p.Meta.Set, filepath.Ext(p.Meta.Set)))
+	if err != nil {
+		return nil, err
+	}
+	p.Me.Peer = n.ID
+	return sh, p.Announce()
+}
+
+// defaultProjectsDir: tu powstaja projekty, do ktorych dolaczamy.
+func defaultProjectsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "."
+	}
+	return filepath.Join(home, "Documents", "Ableton", "abcollab")
+}
+
+func runTUI(dir string, offline bool, code string) error {
+	d, err := device()
+	if err != nil {
+		return err
+	}
+	var node *syncthing.Node
+	if !offline {
+		if node, err = startNode(&d); err != nil {
+			return fmt.Errorf("%w\n(bez sieci: abcollab -offline)", err)
+		}
+		defer node.Stop()
+	}
+	if code == "" {
+		p, err := store.Open(dir, d)
+		if err == nil {
+			return runProject(p, node)
+		}
+		if !errors.Is(err, store.ErrNotProject) || node == nil {
+			return err
+		}
+	}
+	res, err := tea.NewProgram(tui.NewStart(joiner{node}, d, defaultProjectsDir(), code), tea.WithAltScreen()).Run()
+	if err != nil {
+		return err
+	}
+	chosen := res.(tui.Start).Dir()
+	if chosen == "" {
+		return nil
+	}
+	p, err := store.Open(chosen, d)
+	if err != nil {
+		return err
+	}
+	return runProject(p, node)
+}
+
+// joiner: Node dla ekranu startowego (projekt zwracany jako tui.Network).
+type joiner struct{ *syncthing.Node }
+
+func (j joiner) Join(inv syncthing.Invite, dir string) (tui.Network, error) {
+	p, err := j.Node.Join(inv, dir)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (j joiner) Share(dir, folderID, label string) (tui.Network, error) {
+	p, err := j.Node.Share(dir, folderID, label)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func runProject(p *store.Project, node *syncthing.Node) error {
+	var net tui.Network // nil bez sieci (nie *syncthing.Project(nil) - to nie byloby nil)
+	if node != nil {
+		sh, err := share(node, p)
+		if err != nil {
+			return err
+		}
+		net = sh
+	}
+	_, err := tea.NewProgram(tui.New(p, net), tea.WithAltScreen()).Run()
+	return err
+}
+
+func cmdInvite(p *store.Project) error {
+	node, err := startNode(&p.Me)
+	if err != nil {
+		return err
+	}
+	defer node.Stop()
+	sh, err := share(node, p)
+	if err != nil {
+		return err
+	}
+	fmt.Println(sh.Invite(p.Me.Name))
+	fmt.Fprintln(os.Stderr, "\nWyslij ten kod osobie, ktora zapraszasz. Ona robi: abcollab join <kod>")
+	fmt.Fprintln(os.Stderr, "Prosbe przyjmujesz w abcollab (zakladka Lobby) - musi byc wtedy wlaczony.")
+	fmt.Fprintf(os.Stderr, "Twoj kod urzadzenia: %s\n", syncthing.ShortID(node.ID))
+	return nil
+}
+
 // --- komendy -----------------------------------------------------------------------
 
 func withProject(fs *flag.FlagSet, dir *string, args []string, fn func(*store.Project) error) error {
@@ -197,7 +348,7 @@ func cmdInit(fs *flag.FlagSet, dir *string, args []string) error {
 		return err
 	}
 	fmt.Printf("projekt zalozony: %s, set %s, wersja %s\n", p.Dir, p.Meta.Set, v.Short())
-	fmt.Println("udostepnij caly folder projektu (z .abcollab/) wspolpracownikom")
+	fmt.Println("uruchom abcollab i zapros wspolpracownikow w zakladce Lobby (i)")
 	if ws := assetWarnings(p); len(ws) > 0 {
 		for _, w := range ws {
 			fmt.Println(w)

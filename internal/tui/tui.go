@@ -2,7 +2,8 @@
 //
 // Wszystkie operacje na projekcie (status, commit, pull) ida przez store i sa
 // wykonywane jako tea.Cmd poza petla UI - jedna naraz (pole busy), bo store
-// nie jest przygotowany na rownolegle zapisy.
+// nie jest przygotowany na rownolegle zapisy. Operacje lobby (przyjmij,
+// odrzuc) ida przez transport i nie dotykaja store.
 package tui
 
 import (
@@ -12,6 +13,7 @@ import (
 
 	"github.com/c-airr/ableton-collab/als"
 	"github.com/c-airr/ableton-collab/store"
+	"github.com/c-airr/ableton-collab/transport/syncthing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -21,16 +23,26 @@ type tab int
 
 const (
 	tabStatus tab = iota
+	tabLobby
 	tabHistory
 	tabProject
 )
 
-var tabNames = []string{"Status", "Historia", "Projekt"}
+var tabNames = []string{"Status", "Lobby", "Historia", "Projekt"}
+
+// Network: transport projektu (*syncthing.Project). nil - praca bez sieci.
+type Network interface {
+	Lobby() (*syncthing.Lobby, error)
+	Invite(myName string) string
+	Accept(syncthing.Request) error
+	Reject(syncthing.Request) error
+}
 
 const refreshEvery = 3 * time.Second
 
 type Model struct {
-	p *store.Project
+	p   *store.Project
+	net Network
 
 	tab     tab
 	st      *store.Status
@@ -44,6 +56,12 @@ type Model struct {
 
 	conflict *conflictState
 
+	lobby    *syncthing.Lobby
+	lobbyErr error
+	reqCur   int
+	invite   string // pokazany kod zaproszenia
+	copied   bool   // kod trafil do schowka
+
 	width, height int
 }
 
@@ -54,17 +72,19 @@ type conflictState struct {
 	choice map[string]als.Resolution
 }
 
-func New(p *store.Project) Model {
-	return Model{p: p, width: 100, height: 30, busy: "wczytywanie"}
+func New(p *store.Project, net Network) Model {
+	return Model{p: p, net: net, width: 100, height: 30, busy: "wczytywanie"}
 }
 
 // --- komunikaty ----------------------------------------------------------------------
 
 type refreshMsg struct {
-	st     *store.Status
-	log    []*store.Version
-	assets []als.Warning
-	err    error
+	st       *store.Status
+	log      []*store.Version
+	assets   []als.Warning
+	lobby    *syncthing.Lobby
+	lobbyErr error
+	err      error
 }
 
 type tickMsg struct{}
@@ -77,17 +97,22 @@ type actionMsg struct {
 }
 
 func (m Model) refreshCmd(withAssets bool) tea.Cmd {
-	p := m.p
+	p, net := m.p, m.net
 	return func() tea.Msg {
+		var lobby *syncthing.Lobby
+		var lobbyErr error
+		if net != nil {
+			lobby, lobbyErr = net.Lobby()
+		}
 		st, err := p.Status()
 		if err != nil {
-			return refreshMsg{err: err}
+			return refreshMsg{err: err, lobby: lobby, lobbyErr: lobbyErr}
 		}
 		vs, err := p.Versions()
 		if err != nil {
 			return refreshMsg{err: err}
 		}
-		r := refreshMsg{st: st, log: store.Log(vs)}
+		r := refreshMsg{st: st, log: store.Log(vs), lobby: lobby, lobbyErr: lobbyErr}
 		if withAssets {
 			if doc, err := als.ReadFile(p.WorkingPath()); err == nil {
 				r.assets = als.AssetWarnings(doc, p.Dir)
@@ -190,6 +215,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshMsg:
 		m.busy = ""
 		m.err = msg.err
+		m.lobby, m.lobbyErr = msg.lobby, msg.lobbyErr
+		if m.lobby != nil && m.reqCur >= len(m.lobby.Requests) {
+			m.reqCur = max(0, len(m.lobby.Requests)-1)
+		}
 		if msg.err == nil {
 			m.st, m.log = msg.st, msg.log
 			if msg.assets != nil {
@@ -231,16 +260,31 @@ func (m Model) updateMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tab = (m.tab + 1) % tab(len(tabNames))
 	case "shift+tab", "left", "h":
 		m.tab = (m.tab + tab(len(tabNames)) - 1) % tab(len(tabNames))
-	case "1", "2", "3":
+	case "1", "2", "3", "4":
 		m.tab = tab(k.String()[0] - '1')
 	case "up", "k":
 		if m.tab == tabHistory && m.histCur > 0 {
 			m.histCur--
 		}
+		if m.tab == tabLobby && m.reqCur > 0 {
+			m.reqCur--
+		}
 	case "down", "j":
 		if m.tab == tabHistory && m.histCur < len(m.log)-1 {
 			m.histCur++
 		}
+		if m.tab == tabLobby && m.lobby != nil && m.reqCur < len(m.lobby.Requests)-1 {
+			m.reqCur++
+		}
+	case "esc":
+		m.invite = ""
+	case "i":
+		if m.net != nil {
+			m.tab = tabLobby
+			m.invite = m.net.Invite(m.p.Me.Name)
+			m.copied = clipboard(m.invite) == nil
+		}
+		return m, nil
 	}
 	if m.busy != "" {
 		return m, nil
@@ -255,8 +299,39 @@ func (m Model) updateMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m.busy = "odswiezanie"
 		return m, m.refreshCmd(true)
+	case "a", "n":
+		if m.tab != tabLobby || m.net == nil || m.lobby == nil || len(m.lobby.Requests) == 0 {
+			return m, nil
+		}
+		r := m.lobby.Requests[m.reqCur]
+		if k.String() == "a" {
+			if m.lobby.Full() {
+				m.msg, m.msgWarn = []string{fmt.Sprintf("Lobby pelne (%d osob) - nie mozna przyjac %s.", syncthing.MaxMembers, r.Name)}, true
+				return m, nil
+			}
+			m.busy = "przyjmowanie " + r.Name
+			return m, m.lobbyCmd(r, true)
+		}
+		m.busy = "odrzucanie " + r.Name
+		return m, m.lobbyCmd(r, false)
 	}
 	return m, nil
+}
+
+func (m Model) lobbyCmd(r syncthing.Request, accept bool) tea.Cmd {
+	net := m.net
+	return func() tea.Msg {
+		if accept {
+			if err := net.Accept(r); err != nil {
+				return actionMsg{err: err}
+			}
+			return actionMsg{lines: []string{r.Name + " przyjety - dostanie projekt, gdy tylko sie polaczy."}}
+		}
+		if err := net.Reject(r); err != nil {
+			return actionMsg{err: err}
+		}
+		return actionMsg{lines: []string{"Odrzucono prosbe od " + r.Name + "."}}
+	}
 }
 
 func (m Model) updateConflict(k tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -373,12 +448,14 @@ func (m Model) View() string {
 	switch m.tab {
 	case tabStatus:
 		b.WriteString(m.viewStatus(w))
+	case tabLobby:
+		b.WriteString(m.viewLobby(w))
 	case tabHistory:
 		b.WriteString(m.viewHistory(w))
 	case tabProject:
 		b.WriteString(m.viewProject(w))
 	}
-	if len(m.msg) > 0 && m.tab == tabStatus {
+	if len(m.msg) > 0 && (m.tab == tabStatus || m.tab == tabLobby) {
 		box := sBox
 		if m.msgWarn {
 			box = sWarnBox
@@ -394,6 +471,12 @@ func (m Model) footer() string {
 	parts := []string{k("c", "zapisz wersje"), k("p", "pobierz i scal"), k("r", "odswiez")}
 	if m.tab == tabHistory {
 		parts = append(parts, k("↑↓", "wybor"))
+	}
+	if m.net != nil {
+		parts = append(parts, k("i", "zapros"))
+	}
+	if m.tab == tabLobby && m.lobby != nil && len(m.lobby.Requests) > 0 {
+		parts = append(parts, k("a", "przyjmij"), k("n", "odrzuc"))
 	}
 	parts = append(parts, k("tab", "zakladki"), k("q", "wyjscie"))
 	return strings.Join(parts, sDim.Render("  ·  "))
@@ -433,9 +516,11 @@ func (m Model) viewStatus(w int) string {
 		if ps.Head != nil {
 			ver = sDim.Render(fmt.Sprintf("  %s · %s", ps.Head.Short(), ps.Head.Time.Local().Format("2006-01-02 15:04")))
 		}
-		b.WriteString(fmt.Sprintf("  %-22s %s%s\n", trunc(ps.Device.Name, 22), relStyle(ps.Relation).Render(ps.Relation.String()), ver))
+		b.WriteString(fmt.Sprintf("  %s %-20s %s%s\n", m.onlineDot(ps.Device.Peer), trunc(ps.Device.Name, 20), relStyle(ps.Relation).Render(ps.Relation.String()), ver))
 	}
-	b.WriteString(sDim.Render("  (polaczenie i obecnosc online - po dolaczeniu transportu, M3)") + "\n")
+	if m.lobby != nil && len(m.lobby.Requests) > 0 {
+		b.WriteString(lipgloss.NewStyle().Foreground(cWarn).Render(fmt.Sprintf("  %d prosb(y) o dolaczenie - zakladka Lobby (2)", len(m.lobby.Requests))) + "\n")
+	}
 	return b.String()
 }
 
@@ -492,8 +577,12 @@ func (m Model) viewProject(w int) string {
 	row("ten komputer", m.p.Me.Name+sDim.Render("  ("+m.p.Me.ID+")"))
 	row("tryb", "reczny"+sDim.Render("  (automatycznie po zapisie w Live - M5)"))
 	b.WriteString(sSection.Render("Udostepnianie") + "\n")
-	b.WriteString(sDim.Render("  Zaproszenia i polaczenie przez internet przyjda z transportem (M3).") + "\n")
-	b.WriteString(sDim.Render("  Na razie udostepnij caly folder projektu (z .abcollab/) dowolnym syncem.") + "\n")
+	if m.net == nil {
+		b.WriteString(sDim.Render("  Bez sieci (-offline): udostepnij caly folder projektu (z .abcollab/) dowolnym syncem.") + "\n")
+	} else {
+		b.WriteString(sDim.Render("  Syncthing "+syncthing.Version+": zapraszanie w zakladce Lobby (i). Plik .als nie jest") + "\n")
+		b.WriteString(sDim.Render("  wysylany wprost - zmiany ida jako wersje i sa scalane.") + "\n")
+	}
 	b.WriteString(sSection.Render("Co musi miec kazdy uczestnik") + "\n")
 	if len(m.assets) == 0 {
 		b.WriteString(sDim.Render("  nic poza folderem projektu") + "\n")

@@ -85,7 +85,7 @@ func shareDevice(t *testing.T, from, to *store.Project) {
 
 func TestStatusCommitAndHistory(t *testing.T) {
 	p := project(t, "Ja", testdata(t, "base.als"))
-	m := New(p)
+	m := New(p, nil)
 	m = run(t, m, m.refreshCmd(true))
 	v := m.View()
 	if !strings.Contains(v, "Twoja wersja") || !strings.Contains(v, "set zgodny z wersja") {
@@ -100,11 +100,11 @@ func TestStatusCommitAndHistory(t *testing.T) {
 	if v := m.View(); !strings.Contains(v, "Zapisano wersje") || !strings.Contains(v, "set zgodny z wersja") {
 		t.Fatalf("po commicie:\n%s", v)
 	}
-	m = key(t, m, "2")
+	m = key(t, m, "3")
 	if v := m.View(); strings.Count(v, "Ja") < 2 || !strings.Contains(v, "pierwsza wersja") && !strings.Contains(v, "8-12 String Guitar") {
 		t.Fatalf("historia:\n%s", v)
 	}
-	m = key(t, m, "3")
+	m = key(t, m, "4")
 	if v := m.View(); !strings.Contains(v, "song.als") || !strings.Contains(v, "Co musi miec") {
 		t.Fatalf("projekt:\n%s", v)
 	}
@@ -137,7 +137,7 @@ func TestConflictFlow(t *testing.T) {
 	shareDevice(t, b, a)
 	os.WriteFile(a.WorkingPath(), testdata(t, "theirs.als"), 0o644)
 
-	m := New(a)
+	m := New(a, nil)
 	m = run(t, m, m.refreshCmd(true))
 	if v := m.View(); !strings.Contains(v, "Kolega") || !strings.Contains(v, "ma nowe zmiany") && !strings.Contains(v, "do scalenia") {
 		t.Fatalf("uczestnicy:\n%s", v)
@@ -176,7 +176,7 @@ func TestConflictFlow(t *testing.T) {
 func TestConflictCancel(t *testing.T) {
 	p := project(t, "Ja", testdata(t, "base.als"))
 	before, _ := os.ReadFile(p.WorkingPath())
-	m := New(p)
+	m := New(p, nil)
 	m.busy = ""
 	m.conflict = &conflictState{with: store.Device{Name: "X"}, choice: map[string]als.Resolution{},
 		list: []als.Conflict{{ID: "a", UnitLabel: "klip", CanBoth: true}}}
