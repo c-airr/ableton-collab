@@ -300,7 +300,7 @@ func TestOpensLastSession(t *testing.T) {
 	be := &fakeBackend{t: t, me: me, net: net}
 	a := newApp(t, be, Options{Last: dir})
 	dump(t, a)
-	must(t, a, "FILES · beat", "beat Project", "beat.als ★", "Samples", "Ja  you, host", "Basia", "relay",
+	must(t, a, "FILES · beat", "beat Project", "beat.als ◆", "Samples", "Ja  you, host", "Basia", "relay",
 		"Wants to join", "Kolega", "KS776L4", "Kolega wants to join", "Opened session beat", "Save", "Get changes", "1 of 1 online")
 	if be.last != dir {
 		t.Errorf("last session not remembered: %q", be.last)

@@ -204,7 +204,13 @@ func rollLines(notes []midiNote, start, end float64, w, h int) []string {
 			}
 			from := int((nt.start - start) / step)
 			to := int((nt.start + nt.length - start) / step)
-			for c := max(0, from); c <= min(cols-1, max(from, to-1)); c++ {
+			// ostatnia kolumna dluzszej nuty zostaje pusta - sasiednie nuty
+			// (np. szesnastki hihatu) nie zlewaja sie w jeden pasek
+			last := to - 1
+			if to-from >= 2 {
+				last = to - 2
+			}
+			for c := max(0, from); c <= min(cols-1, max(from, last)); c++ {
 				ch := "█"
 				if nt.vel < 50 {
 					ch = "▓"

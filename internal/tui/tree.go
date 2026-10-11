@@ -228,7 +228,7 @@ func (t *tree) lines(w, h int, focused bool, set string) []string {
 			style = sDirName
 		case n.rel == set:
 			style = sSetName
-			name += " ★"
+			name += " ◆"
 		case isAudio(n.name):
 			style = sAudioName
 		}

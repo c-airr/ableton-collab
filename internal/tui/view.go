@@ -206,7 +206,7 @@ func (a App) centerView(l layout) string {
 // statusLines: stan pod logo - sesja, polaczenie i najwazniejsza sprawa teraz.
 func (a App) statusLines(w int) []string {
 	text, lv := a.status()
-	icon := map[level]string{lInfo: "", lOK: "", lWarn: "⚠ ", lErr: "✗ ", lFile: "⇅ "}[lv]
+	icon := map[level]string{lInfo: "", lOK: "", lWarn: "⚠ ", lErr: "✗ ", lFile: "↕ "}[lv]
 	msg := []string{}
 	for _, l := range wrapStyled(icon+text, w) {
 		msg = append(msg, levelStyle(lv).Bold(lv != lInfo).Render(l))
@@ -228,13 +228,13 @@ func (a App) liveLine() string {
 	}
 	switch {
 	case s.live == nil:
-		return sDim.Render("♪ Live: not available")
+		return sDim.Render("◉ Live: not available")
 	case s.liveSt.Matched:
-		return sOKText.Render("♪ Live: live sync on") + sDim.Render(" · "+mode)
+		return sOKText.Render("◉ Live: live sync on") + sDim.Render(" · "+mode)
 	case s.liveSt.Detail != "":
-		return sWarnText.Render("♪ " + s.liveSt.Detail)
+		return sWarnText.Render("◉ " + s.liveSt.Detail)
 	}
-	return sDim.Render("♪ Live: waiting for Live")
+	return sDim.Render("◉ Live: waiting for Live")
 }
 
 // connLine: ilu ludzi jest polaczonych.
@@ -493,9 +493,9 @@ func relIcon(r store.Relation) string {
 	case store.RelSame:
 		return sOKText.Render("✓")
 	case store.RelAhead:
-		return sWarnText.Render("⇣")
+		return sWarnText.Render("↓")
 	case store.RelBehind:
-		return sWarnText.Render("⇡")
+		return sWarnText.Render("↑")
 	case store.RelDiverged:
 		return sErr.Render("⚡")
 	case store.RelIncomplete:
@@ -596,7 +596,7 @@ func (a App) status() (string, level) {
 	}
 	switch {
 	case s.busy != "" && s.busy != refreshing:
-		return "⟳ " + strings.ToUpper(s.busy[:1]) + s.busy[1:] + "...", lWarn
+		return "" + strings.ToUpper(s.busy[:1]) + s.busy[1:] + "...", lWarn
 	case len(s.liveQueue) > 0:
 		return fmt.Sprintf("Live conflict with %s - choose which version stays", s.liveQueue[0].From), lErr
 	case s.err != nil:

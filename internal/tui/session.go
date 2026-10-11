@@ -311,9 +311,9 @@ func shortChange(s string) string {
 func (s *session) logEvent(e syncthing.Event) {
 	switch e.Kind {
 	case "received":
-		s.logf(lFile, "⇣ %s received", e.File)
+		s.logf(lFile, "↓ %s received", e.File)
 	case "sending":
-		s.logf(lFile, "⇡ %s → sending to others", e.File)
+		s.logf(lFile, "↑ %s → sending to others", e.File)
 	case "deleted":
 		s.logf(lFile, "✕ %s deleted", e.File)
 	case "error":

@@ -269,7 +269,7 @@ func (d *hostDialog) form(a *App) form {
 			body: []string{sBold.Render(dirFit(d.info.Dir, 64)), "",
 				"In Live: File > Save Live Set As... and pick this folder.",
 				"Live may create a \"<name> Project\" subfolder - that's fine.", "",
-				sWarnText.Render("⟳ waiting for an .als file...")},
+				sWarnText.Render("waiting for an .als file...")},
 			hint: "esc back"}
 	}
 	return form{title: "Host a session", width: 74, path: d.path, err: d.err,
@@ -495,7 +495,7 @@ func (d *joinDialog) form(a *App) form {
 			body: []string{
 				"Your device code: " + sCode.Render(syncthing.ShortID(a.be.DeviceID())),
 				d.inv.Host + " sees it next to your request - tell them, so they know it's you.", "",
-				sWarnText.Render("⟳ " + w),
+				sWarnText.Render("" + w),
 				sDim.Render("folder: " + dirFit(d.dir, 60))},
 			hint: "esc hide (the request stays - reopen the session from Settings)"}
 	}

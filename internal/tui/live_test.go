@@ -65,11 +65,11 @@ func clipObj(keys ...float64) live.Obj {
 func TestLiveStatusAndLog(t *testing.T) {
 	a, _, _, _ := liveApp(t, Settings{AutoSync: true})
 	dump(t, a)
-	must(t, a, "♪ Live: live sync on", "auto")
+	must(t, a, "◉ Live: live sync on", "auto")
 	mustLog(t, a, "Live connected")
 	a = liveNote(t, a, live.Note{Kind: "log", Text: `Kolega changed Hats slot 1 clip "hh"`})
 	a = liveNote(t, a, live.Note{Kind: "local", Text: "Bass mixer"})
-	mustLog(t, a, `Kolega changed Hats slot 1 clip "hh"`, "⇡ Bass mixer")
+	mustLog(t, a, `Kolega changed Hats slot 1 clip "hh"`, "↑ Bass mixer")
 }
 
 func TestLiveConflictDialog(t *testing.T) {

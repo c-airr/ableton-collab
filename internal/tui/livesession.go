@@ -45,7 +45,7 @@ func (s *session) onLive(a *App, n live.Note) {
 		s.logf(lOK, "%s", n.Text)
 	case "local":
 		s.dirty, s.lastLocal = true, s.now()
-		s.logf(lFile, "⇡ %s", n.Text)
+		s.logf(lFile, "↑ %s", n.Text)
 	case "structure":
 		s.dirty, s.lastLocal = true, s.now()
 		s.logf(lInfo, "Live: tracks/devices changed - goes out with the next save")
