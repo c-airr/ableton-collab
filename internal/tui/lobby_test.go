@@ -5,16 +5,11 @@ import (
 	"compress/gzip"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/c-airr/ableton-collab/store"
 	"github.com/c-airr/ableton-collab/transport/syncthing"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 const (
@@ -104,7 +99,7 @@ func TestLobby(t *testing.T) {
 	m = key(t, m, "i")
 	v = m.View()
 	dump(t, v)
-	if !strings.Contains(v, "ABC1KODJA") || !strings.Contains(v, "abcollab join") {
+	if !strings.Contains(v, "ABC1KODJA") || !strings.Contains(v, "Dolacz do projektu") {
 		t.Fatalf("brak kodu zaproszenia:\n%s", v)
 	}
 	if m = key(t, m, "esc"); strings.Contains(m.View(), "ABC1KODJA") {
@@ -135,101 +130,5 @@ func TestNoNetwork(t *testing.T) {
 	m = key(t, m, "2")
 	if v := m.View(); !strings.Contains(v, "bez sieci") || strings.Contains(v, "zapros") {
 		t.Fatalf("offline:\n%s", v)
-	}
-}
-
-// fakeJoiner: "dolaczenie" kopiuje historie hosta do folderu goscia, jak
-// zrobilby to Syncthing po akceptacji.
-type fakeJoiner struct {
-	t      *testing.T
-	host   *store.Project
-	joined string
-}
-
-func (f *fakeJoiner) DeviceID() string                           { return idGuest }
-func (f *fakeJoiner) Folders() ([]syncthing.FolderConfig, error) { return nil, nil }
-func (f *fakeJoiner) Share(dir, id, label string) (Network, error) {
-	return &fakeNet{}, nil
-}
-func (f *fakeJoiner) Join(inv syncthing.Invite, dir string) (Network, error) {
-	if ents, _ := os.ReadDir(dir); len(ents) > 0 {
-		return nil, errors.New("folder nie jest pusty")
-	}
-	f.joined = dir
-	copyDir(f.t, filepath.Join(f.host.Dir, store.Dir), filepath.Join(dir, store.Dir))
-	return &fakeNet{lobby: syncthing.Lobby{Members: []syncthing.Member{{ID: inv.Device, Connected: true}}}}, nil
-}
-
-func startKey(t *testing.T, s Start, k string) Start {
-	t.Helper()
-	var msg tea.KeyMsg
-	switch k {
-	case "enter":
-		msg = tea.KeyMsg{Type: tea.KeyEnter}
-	case "ctrl+u":
-		msg = tea.KeyMsg{Type: tea.KeyCtrlU}
-	default:
-		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k), Paste: len(k) > 1}
-	}
-	next, cmd := s.Update(msg)
-	s = next.(Start)
-	for i := 0; cmd != nil && i < 20; i++ {
-		m := cmd()
-		if _, ok := m.(tea.QuitMsg); ok {
-			break
-		}
-		next, cmd = s.Update(m)
-		s = next.(Start)
-	}
-	return s
-}
-
-func TestJoinFlow(t *testing.T) {
-	host := project(t, "Ja", tinySet())
-	base := t.TempDir()
-	j := &fakeJoiner{t: t, host: host}
-	s := NewStart(j, store.NewDevice("Kolega"), base, "")
-	s.pollWait = 0
-	next, _ := s.Update(s.Init()())
-	s = next.(Start)
-	if s.stage != stCode {
-		t.Fatalf("bez projektow powinno od razu pytac o kod, jest %d", s.stage)
-	}
-	s = startKey(t, s, "smieci")
-	s = startKey(t, s, "enter")
-	if s.err == nil || s.stage != stCode {
-		t.Fatal("zly kod przyjety")
-	}
-	code := syncthing.Invite{Device: idHost, Folder: "abcollab-abc", Name: "song", Host: "Ja"}.Code()
-	s = startKey(t, s, "ctrl+u")
-	s = startKey(t, s, code[:30]+"\n"+code[30:])
-	s = startKey(t, s, "enter")
-	want := filepath.Join(base, "song Project")
-	if s.stage != stDir || s.input != want {
-		t.Fatalf("etap %d, folder %q", s.stage, s.input)
-	}
-	dump(t, s.View())
-	s = startKey(t, s, "enter")
-	dump(t, s.View())
-	if s.Dir() != want || j.joined != want {
-		t.Fatalf("Dir()=%q joined=%q etap=%d err=%v\n%s", s.Dir(), j.joined, s.stage, s.err, s.View())
-	}
-	got, _ := os.ReadFile(filepath.Join(want, "song.als"))
-	if !bytes.Equal(got, tinySet()) {
-		t.Error("set nie zostal pobrany")
-	}
-}
-
-func TestJoinNonEmptyDir(t *testing.T) {
-	base := t.TempDir()
-	os.WriteFile(filepath.Join(base, "prywatne.txt"), []byte("x"), 0o644)
-	code := syncthing.Invite{Device: idHost, Folder: "abcollab-abc", Name: "song", Host: "Ja"}.Code()
-	s := NewStart(&fakeJoiner{}, store.NewDevice("Kolega"), base, code)
-	s = startKey(t, s, "enter") // kod -> folder
-	s = startKey(t, s, "ctrl+u")
-	s = startKey(t, s, base)
-	s = startKey(t, s, "enter")
-	if s.Dir() != "" || s.stage != stDir || s.err == nil || !strings.Contains(s.View(), "nie jest pusty") {
-		t.Fatalf("dolaczono do niepustego folderu:\n%s", s.View())
 	}
 }

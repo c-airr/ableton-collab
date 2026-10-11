@@ -51,7 +51,7 @@ func (m Model) viewLobby(w int) string {
 	}
 	l := m.lobby
 	if l == nil {
-		return b.String() + sDim.Render("\n  wczytywanie...") + "\n"
+		return b.String() + sDim.Render("\n  wczytywanie...") + "\n" + m.viewInvite(w)
 	}
 
 	title := fmt.Sprintf("Lobby (%d/%d)", len(l.Members)+1, syncthing.MaxMembers)
@@ -105,6 +105,11 @@ func (m Model) viewLobby(w int) string {
 		}
 	}
 
+	return b.String() + m.viewInvite(w)
+}
+
+func (m Model) viewInvite(w int) string {
+	var b strings.Builder
 	if m.invite != "" {
 		note := "Wyslij ten kod osobie, ktora chcesz zaprosic (np. na Discordzie)."
 		if m.copied {
@@ -117,8 +122,9 @@ func (m Model) viewLobby(w int) string {
 		}
 		body = append(body, wrap(m.invite, max(20, w-8))...)
 		body = append(body, "",
-			sDim.Render("Ta osoba robi: abcollab join <kod>. Jej prosba pojawi sie tutaj - przyjmij (a),"),
-			sDim.Render("gdy kod urzadzenia zgadza sie z tym, ktory ona widzi u siebie.  ")+sKey.Render("esc")+sDim.Render(" zamknij"))
+			sDim.Render("Ta osoba wpisuje abcollab > Dolacz do projektu i wkleja kod. Jej prosba pojawi sie"),
+			sDim.Render("tutaj - przyjmij (a), gdy kod urzadzenia zgadza sie z tym, ktory ona widzi u siebie."),
+			sDim.Render("Nie ma abcollab? Instalacja: github.com/c-airr/ableton-collab/releases")+"  "+sKey.Render("esc")+sDim.Render(" zamknij"))
 		b.WriteString("\n" + sBox.Width(w-4).Render(strings.Join(body, "\n")) + "\n")
 	}
 	return b.String()

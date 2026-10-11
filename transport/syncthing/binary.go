@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -86,7 +87,7 @@ func Ensure(dir string, log func(string)) (string, error) {
 	if got := hex.EncodeToString(sum[:]); got != sums[plat] {
 		return "", fmt.Errorf("pobrany %s ma zla sume sha256 (%s) - nie uruchamiam", name, got)
 	}
-	bin, err := extract(name, data)
+	bin, err := extract(name, exeName(), data)
 	if err != nil {
 		return "", err
 	}
@@ -117,16 +118,22 @@ func download(url string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, 200<<20))
 }
 
+// topLevel: plik lezy bezposrednio w glownym katalogu archiwum. W archiwum
+// sa tez inne pliki o nazwie "syncthing" (np. etc/*/syncthing - skrypty uslug).
+func topLevel(p, want string) bool {
+	p = strings.TrimPrefix(p, "./")
+	return path.Base(p) == want && strings.Count(strings.Trim(p, "/"), "/") == 1
+}
+
 // extract wyciaga sama binarke z archiwum wydania (<katalog>/syncthing[.exe]).
-func extract(name string, data []byte) ([]byte, error) {
-	want := exeName()
+func extract(name, want string, data []byte) ([]byte, error) {
 	if path.Ext(name) == ".zip" {
 		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 		if err != nil {
 			return nil, err
 		}
 		for _, f := range zr.File {
-			if path.Base(f.Name) == want && !f.FileInfo().IsDir() {
+			if topLevel(f.Name, want) && !f.FileInfo().IsDir() {
 				rc, err := f.Open()
 				if err != nil {
 					return nil, err
@@ -149,7 +156,7 @@ func extract(name string, data []byte) ([]byte, error) {
 			if err != nil {
 				return nil, err
 			}
-			if path.Base(h.Name) == want && h.Typeflag == tar.TypeReg {
+			if topLevel(h.Name, want) && h.Typeflag == tar.TypeReg {
 				return io.ReadAll(tr)
 			}
 		}

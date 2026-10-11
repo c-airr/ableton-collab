@@ -76,6 +76,16 @@ func New(p *store.Project, net Network) Model {
 	return Model{p: p, net: net, width: 100, height: 30, busy: "wczytywanie"}
 }
 
+// ShowInvite: start od razu z kodem zaproszenia (projekt wlasnie zalozony).
+func (m Model) ShowInvite() Model {
+	if m.net != nil {
+		m.tab = tabLobby
+		m.invite = m.net.Invite(m.p.Me.Name)
+		m.copied = clipboard(m.invite) == nil
+	}
+	return m
+}
+
 // --- komunikaty ----------------------------------------------------------------------
 
 type refreshMsg struct {

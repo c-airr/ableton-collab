@@ -4,7 +4,7 @@
 // przenosi ja dolaczony Syncthing (pobierany przy pierwszym uruchomieniu).
 // Z -offline dziala bez sieci - folder przenosi wtedy dowolny sync.
 //
-//	abcollab                    interfejs terminalowy (TUI)
+//	abcollab                    menu (projekty, nowy, dolacz) i TUI projektu
 //	abcollab join <kod>         dolacz do projektu kodem zaproszenia
 //	abcollab invite             wypisz kod zaproszenia do projektu
 //	abcollab init <set.als>     zaloz projekt w biezacym folderze
@@ -38,7 +38,8 @@ import (
 func usage() {
 	fmt.Fprintln(os.Stderr, `uzycie: abcollab [komenda] [-C folder] [opcje]
 
-  (bez komendy)       interfejs terminalowy (TUI); -offline: bez sieci
+  (bez komendy)       menu: twoje projekty, nowy projekt, dolaczanie
+                      -C folder: od razu ten projekt; -offline: bez sieci
   join <kod>          dolacz do projektu kodem zaproszenia
   invite              wypisz kod zaproszenia (prosby przyjmujesz w TUI)
   init <set.als>      zaloz projekt w folderze z setem
@@ -47,7 +48,8 @@ func usage() {
   pull [-i] [-r ID=ours|theirs|both]
                       pobierz zmiany innych i scal (-i: pytaj przy konflikcie)
   log [-n N]          historia wersji
-  whoami [-name X]    tozsamosc tego komputera`)
+  whoami [-name X]    tozsamosc tego komputera
+  version             wersja programu`)
 }
 
 func main() {
@@ -65,7 +67,9 @@ func main() {
 	case "tui":
 		offline := fs.Bool("offline", false, "bez sieci (bez Syncthinga)")
 		fs.Parse(args)
-		err = runTUI(*dir, *offline, "")
+		direct := false
+		fs.Visit(func(f *flag.Flag) { direct = direct || f.Name == "C" })
+		err = runTUI(*dir, direct, *offline, "")
 	case "join":
 		var code string
 		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -75,7 +79,7 @@ func main() {
 		if code == "" {
 			code = strings.Join(fs.Args(), "")
 		}
-		err = runTUI("", false, code)
+		err = runTUI(".", false, false, code)
 	case "invite":
 		err = withProject(fs, dir, args, cmdInvite)
 	case "init":
@@ -96,6 +100,9 @@ func main() {
 		name := fs.String("name", "", "zmien nazwe tego komputera")
 		fs.Parse(args)
 		err = cmdWhoami(*name)
+	case "version", "--version", "-version":
+		fmt.Println("abcollab", version, "(Syncthing "+syncthing.Version+")")
+		return
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -113,6 +120,9 @@ func main() {
 }
 
 var errConflict = errors.New("konflikt")
+
+// version: ustawiane przy budowaniu wydania (-ldflags "-X main.version=v0.1.0").
+var version = "dev"
 
 type multi []string
 
@@ -133,24 +143,30 @@ func configDir() (string, error) {
 }
 
 func device() (store.Device, error) {
+	d, _, err := loadDevice()
+	return d, err
+}
+
+// loadDevice: tozsamosc tego komputera; isNew - wlasnie utworzona (pierwsze
+// uruchomienie, menu zapyta o nazwe).
+func loadDevice() (d store.Device, isNew bool, err error) {
 	dir, err := configDir()
 	if err != nil {
-		return store.Device{}, err
+		return d, false, err
 	}
 	path := filepath.Join(dir, "device.json")
-	var d store.Device
 	if data, err := os.ReadFile(path); err == nil {
 		if err := json.Unmarshal(data, &d); err != nil || d.ID == "" {
-			return d, fmt.Errorf("%s uszkodzony", path)
+			return d, false, fmt.Errorf("%s uszkodzony", path)
 		}
-		return d, nil
+		return d, false, nil
 	}
 	name, _ := os.Hostname()
 	if name == "" {
 		name = "komputer"
 	}
 	d = store.NewDevice(name)
-	return d, saveDevice(path, d)
+	return d, true, saveDevice(path, d)
 }
 
 func saveDevice(path string, d store.Device) error {
@@ -226,62 +242,144 @@ func defaultProjectsDir() string {
 	return filepath.Join(home, "Documents", "Ableton", "abcollab")
 }
 
-func runTUI(dir string, offline bool, code string) error {
-	d, err := device()
+// setRoots: gdzie szukac setow Live na nowy projekt (Live na Windowsie/macOS
+// i Live pod Wine na Linuksie).
+func setRoots() []string {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
-	}
-	var node *syncthing.Node
-	if !offline {
-		if node, err = startNode(&d); err != nil {
-			return fmt.Errorf("%w\n(bez sieci: abcollab -offline)", err)
-		}
-		defer node.Stop()
-	}
-	if code == "" {
-		p, err := store.Open(dir, d)
-		if err == nil {
-			return runProject(p, node)
-		}
-		if !errors.Is(err, store.ErrNotProject) || node == nil {
-			return err
-		}
-	}
-	res, err := tea.NewProgram(tui.NewStart(joiner{node}, d, defaultProjectsDir(), code), tea.WithAltScreen()).Run()
-	if err != nil {
-		return err
-	}
-	chosen := res.(tui.Start).Dir()
-	if chosen == "" {
 		return nil
 	}
-	p, err := store.Open(chosen, d)
+	roots := []string{
+		filepath.Join(home, "Documents", "Ableton"),
+		filepath.Join(home, "OneDrive", "Documents", "Ableton"),
+		filepath.Join(home, "Music", "Ableton"),
+	}
+	for _, pat := range []string{".wine*/drive_c/users/*/Documents/Ableton", "Games/*/drive_c/users/*/Documents/Ableton"} {
+		m, _ := filepath.Glob(filepath.Join(home, pat))
+		roots = append(roots, m...)
+	}
+	return roots
+}
+
+// runTUI: bez -C menu (projekty, nowy, dolacz); z -C od razu projekt.
+func runTUI(dir string, direct, offline bool, code string) error {
+	d, isNew, err := loadDevice()
 	if err != nil {
 		return err
 	}
-	return runProject(p, node)
+	if offline {
+		p, err := store.Open(dir, d)
+		if err != nil {
+			return err
+		}
+		return runProject(p, nil, false)
+	}
+	node, err := startNode(&d)
+	if err != nil {
+		return fmt.Errorf("%w\n(bez sieci, w folderze projektu: abcollab -offline)", err)
+	}
+	defer node.Stop()
+	if direct && code == "" {
+		p, err := store.Open(dir, d)
+		if err != nil {
+			return err
+		}
+		return runProject(p, node, false)
+	}
+	here := ""
+	if p, err := store.Open(dir, d); err == nil {
+		here = p.Dir
+	}
+	be := &backend{Node: node, me: &d}
+	res, err := tea.NewProgram(tui.NewStart(be, tui.StartOptions{
+		Me: d, AskName: isNew, BaseDir: defaultProjectsDir(), Roots: setRoots(), Here: here, Code: code,
+	}), tea.WithAltScreen()).Run()
+	if err != nil {
+		return err
+	}
+	st := res.(tui.Start)
+	if st.Dir() == "" {
+		return nil
+	}
+	p, err := store.Open(st.Dir(), d)
+	if err != nil {
+		return err
+	}
+	return runProject(p, node, st.Created())
 }
 
-// joiner: Node dla ekranu startowego (projekt zwracany jako tui.Network).
-type joiner struct{ *syncthing.Node }
+// backend: Node + tozsamosc dla menu (projekty zwracane jako tui.Network).
+type backend struct {
+	*syncthing.Node
+	me *store.Device
+}
 
-func (j joiner) Join(inv syncthing.Invite, dir string) (tui.Network, error) {
-	p, err := j.Node.Join(inv, dir)
+func (b *backend) Join(inv syncthing.Invite, dir string) (tui.Network, error) {
+	p, err := b.Node.Join(inv, dir)
 	if err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-func (j joiner) Share(dir, folderID, label string) (tui.Network, error) {
-	p, err := j.Node.Share(dir, folderID, label)
+func (b *backend) Share(dir, folderID, label string) (tui.Network, error) {
+	p, err := b.Node.Share(dir, folderID, label)
 	if err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-func runProject(p *store.Project, node *syncthing.Node) error {
+func (b *backend) Rename(name string) error {
+	dir, err := configDir()
+	if err != nil {
+		return err
+	}
+	b.me.Name = name
+	if err := saveDevice(filepath.Join(dir, "device.json"), *b.me); err != nil {
+		return err
+	}
+	return b.Node.PatchDevice(b.Node.ID, map[string]any{"name": name})
+}
+
+// Create zaklada projekt z setu Live. Udostepniany jest caly folder setu, wiec
+// wymagamy prawdziwego folderu projektu Live (z "Ableton Project Info") -
+// set lezacy luzem np. w Dokumentach wyslalby cudze pliki.
+func (b *backend) Create(set string) (string, error) {
+	abs, err := filepath.Abs(set)
+	if err != nil {
+		return "", err
+	}
+	if !strings.EqualFold(filepath.Ext(abs), ".als") {
+		return "", fmt.Errorf("%s to nie jest plik setu Live (.als)", filepath.Base(abs))
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return "", fmt.Errorf("nie ma pliku %s", abs)
+	}
+	dir, name := filepath.Dir(abs), filepath.Base(abs)
+	if _, err := os.Stat(filepath.Join(dir, "Ableton Project Info")); err != nil {
+		return "", fmt.Errorf("%s nie lezy w folderze projektu Live. W Live: File > Save Live Set As (albo Collect All and Save) i wybierz zapisany set", name)
+	}
+	p, err := store.Open(dir, *b.me)
+	switch {
+	case err == nil:
+		if p.Meta.Set != name {
+			return "", fmt.Errorf("w tym folderze jest juz projekt abcollab z setem %s", p.Meta.Set)
+		}
+	case errors.Is(err, store.ErrNotProject):
+		if p, _, err = store.Init(dir, name, *b.me); err != nil {
+			return "", err
+		}
+	default:
+		return "", err
+	}
+	if _, err := share(b.Node, p); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func runProject(p *store.Project, node *syncthing.Node, invite bool) error {
 	var net tui.Network // nil bez sieci (nie *syncthing.Project(nil) - to nie byloby nil)
 	if node != nil {
 		sh, err := share(node, p)
@@ -290,7 +388,11 @@ func runProject(p *store.Project, node *syncthing.Node) error {
 		}
 		net = sh
 	}
-	_, err := tea.NewProgram(tui.New(p, net), tea.WithAltScreen()).Run()
+	m := tui.New(p, net)
+	if invite {
+		m = m.ShowInvite()
+	}
+	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	return err
 }
 
@@ -305,7 +407,7 @@ func cmdInvite(p *store.Project) error {
 		return err
 	}
 	fmt.Println(sh.Invite(p.Me.Name))
-	fmt.Fprintln(os.Stderr, "\nWyslij ten kod osobie, ktora zapraszasz. Ona robi: abcollab join <kod>")
+	fmt.Fprintln(os.Stderr, "\nWyslij ten kod osobie, ktora zapraszasz. Ona wpisuje abcollab > Dolacz do projektu.")
 	fmt.Fprintln(os.Stderr, "Prosbe przyjmujesz w abcollab (zakladka Lobby) - musi byc wtedy wlaczony.")
 	fmt.Fprintf(os.Stderr, "Twoj kod urzadzenia: %s\n", syncthing.ShortID(node.ID))
 	return nil

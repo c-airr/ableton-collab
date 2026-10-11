@@ -1,6 +1,7 @@
 package syncthing
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"os"
@@ -194,4 +195,24 @@ func tinySet(t *testing.T) []byte {
 	w.Write([]byte("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<Ableton MajorVersion=\"5\">\r\n\t<LiveSet>\r\n\t\t<Tracks />\r\n\t</LiveSet>\r\n</Ableton>\r\n"))
 	w.Close()
 	return buf.Bytes()
+}
+
+// W prawdziwym archiwum na Linuksa skrypt uslugi etc/*/syncthing jest przed binarka.
+func TestExtractTopLevel(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, f := range []struct{ name, body string }{
+		{"syncthing-linux-amd64-v2.1.6/etc/freebsd-rc/syncthing", "skrypt"},
+		{"syncthing-linux-amd64-v2.1.6/syncthing", "binarka"},
+	} {
+		tw.WriteHeader(&tar.Header{Name: f.name, Mode: 0o755, Size: int64(len(f.body)), Typeflag: tar.TypeReg})
+		tw.Write([]byte(f.body))
+	}
+	tw.Close()
+	gz.Close()
+	got, err := extract("x.tar.gz", "syncthing", buf.Bytes())
+	if err != nil || string(got) != "binarka" {
+		t.Fatalf("%q %v", got, err)
+	}
 }

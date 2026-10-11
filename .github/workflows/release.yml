@@ -1,0 +1,66 @@
+# Wydanie: git tag v0.1.0 && git push origin v0.1.0
+# Buduje abcollab na Windows/Linux/macOS (amd64 + arm64) i publikuje paczki
+# z checksums.txt w GitHub Releases - stamtad pobieraja install.sh / install.ps1.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: testy
+        run: go test ./...
+      - name: budowanie
+        run: |
+          set -eu
+          mkdir -p dist
+          for target in windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os=${target%/*}; arch=${target#*/}; ext=""
+            [ "$os" = windows ] && ext=.exe
+            dir="build/abcollab-$os-$arch"
+            mkdir -p "$dir"
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X main.version=$GITHUB_REF_NAME" -o "$dir/abcollab$ext" ./cmd/abcollab
+            cp LICENSE "$dir/"
+            if [ "$os" = windows ]; then
+              (cd "$dir" && zip -q "../../dist/abcollab-$os-$arch.zip" ./*)
+            else
+              tar -C "$dir" -czf "dist/abcollab-$os-$arch.tar.gz" .
+            fi
+          done
+          (cd dist && sha256sum ./*.zip ./*.tar.gz | sed 's| \./| |' > checksums.txt)
+          cat dist/checksums.txt
+      - name: publikacja
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          ## Instalacja
+
+          **Windows** (PowerShell):
+          ```powershell
+          irm https://raw.githubusercontent.com/c-airr/ableton-collab/main/install.ps1 | iex
+          ```
+
+          **Linux / macOS** (terminal):
+          ```sh
+          curl -fsSL https://raw.githubusercontent.com/c-airr/ableton-collab/main/install.sh | sh
+          ```
+
+          Potem w nowym terminalu: `abcollab`.
+
+          Instalator sprawdza sume sha256 paczki (`checksums.txt`). Przy pierwszym
+          uruchomieniu abcollab pobiera Syncthing (MPL-2.0) z jego oficjalnych wydan,
+          rowniez sprawdzajac sume sha256.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md
