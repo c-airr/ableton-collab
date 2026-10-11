@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/c-airr/ableton-collab/als"
 )
@@ -38,7 +39,7 @@ func summarize(prefix string, ch []als.Change) []string {
 	}
 	for i, c := range ch {
 		if i == maxLines {
-			out = append(out, fmt.Sprintf("... i %d wiecej", len(ch)-maxLines))
+			out = append(out, fmt.Sprintf("... and %d more", len(ch)-maxLines))
 			break
 		}
 		s := c.String()
@@ -59,7 +60,7 @@ func (p *Project) readWorking() ([]byte, *als.Doc, error) {
 	}
 	doc, err := als.Read(bytes.NewReader(data))
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: nie da sie odczytac (Live jeszcze zapisuje?): %w", p.SetName(), err)
+		return nil, nil, fmt.Errorf("%s: can't read the set (is Live still saving?): %w", p.SetName(), err)
 	}
 	return data, doc, nil
 }
@@ -81,7 +82,7 @@ func (p *Project) WorkingChanges() ([]als.Change, bool, error) {
 	}
 	hv := vs[head]
 	if hv == nil {
-		return nil, false, fmt.Errorf("moja wersja %s nie istnieje", Short(head))
+		return nil, false, fmt.Errorf("my version %s does not exist", Short(head))
 	}
 	hdoc, err := p.LoadDoc(hv)
 	if err != nil {
@@ -101,7 +102,7 @@ func (p *Project) Commit() (*Version, error) {
 	head := p.Head()
 	var parents, summary []string
 	if head == "" {
-		summary = []string{"pierwsza wersja"}
+		summary = []string{"first version"}
 	} else {
 		vs, err := p.Versions()
 		if err != nil {
@@ -109,7 +110,7 @@ func (p *Project) Commit() (*Version, error) {
 		}
 		hv := vs[head]
 		if hv == nil {
-			return nil, fmt.Errorf("moja wersja %s nie istnieje", Short(head))
+			return nil, fmt.Errorf("my version %s does not exist", Short(head))
 		}
 		hdoc, err := p.LoadDoc(hv)
 		if err != nil {
@@ -170,7 +171,7 @@ const (
 )
 
 func (r Relation) String() string {
-	return [...]string{"brak wersji", "odbieranie...", "aktualny", "nie ma moich zmian", "ma nowe zmiany", "rozne zmiany - do scalenia"}[r]
+	return [...]string{"no version yet", "receiving...", "up to date", "missing your changes", "has new changes", "diverged - needs merge"}[r]
 }
 
 type PeerStatus struct {
@@ -195,7 +196,7 @@ func (p *Project) Status() (*Status, error) {
 	if me != "" {
 		st.Head = vs[me]
 		if st.Head == nil {
-			return nil, fmt.Errorf("moja wersja %s nie istnieje", Short(me))
+			return nil, fmt.Errorf("my version %s does not exist", Short(me))
 		}
 		ch, _, err := p.WorkingChanges()
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -254,6 +255,8 @@ type PullResult struct {
 	// zostalo zapisane; Pull z rozstrzygnieciami (Conflict.ID) dokonczy.
 	Conflicts    []als.Conflict
 	ConflictWith Device
+	// Adopt: daty zapisu obu stron - okno wyboru zaznacza nowsza.
+	OursTime, TheirsTime time.Time
 }
 
 // WorkingChanged: czy plik roboczy zostal podmieniony (Live musi go przeladowac).
@@ -312,7 +315,7 @@ func (p *Project) Pull(res map[string]als.Resolution) (*PullResult, error) {
 		case RelDiverged:
 			v, conflicts, warns, err := p.merge(vs, me, h, d, res)
 			if err != nil {
-				return nil, fmt.Errorf("scalanie z %s: %w", d.Name, err)
+				return nil, fmt.Errorf("merging with %s: %w", d.Name, err)
 			}
 			if len(conflicts) > 0 {
 				r.Conflicts, r.ConflictWith = conflicts, d
@@ -361,14 +364,14 @@ func (p *Project) backupForeignWorking(target *Version, r *PullResult) error {
 		}
 	}
 	name := strings.TrimSuffix(p.WorkingPath(), filepath.Ext(p.WorkingPath()))
-	r.Backup = filepath.Join(fmt.Sprintf("%s (kopia %s).als", name, p.now().Local().Format("2006-01-02 150405")))
+	r.Backup = filepath.Join(fmt.Sprintf("%s (copy %s).als", name, p.now().Local().Format("2006-01-02 150405")))
 	return writeFileAtomic(r.Backup, data)
 }
 
 func (p *Project) merge(vs map[string]*Version, me, h string, d Device, res map[string]als.Resolution) (*Version, []als.Conflict, []als.Warning, error) {
 	base := MergeBase(vs, me, h)
 	if base == "" {
-		return nil, nil, nil, fmt.Errorf("brak wspolnej historii")
+		return nil, nil, nil, fmt.Errorf("no common history")
 	}
 	var docs [3]*als.Doc
 	for i, id := range []string{base, me, h} {
@@ -386,7 +389,7 @@ func (p *Project) merge(vs map[string]*Version, me, h string, d Device, res map[
 		return nil, mr.Conflicts, nil, nil
 	}
 	if errs := als.Validate(mr.Doc); len(errs) > 0 {
-		return nil, nil, nil, fmt.Errorf("wynik niespojny: %s", strings.Join(errs, "; "))
+		return nil, nil, nil, fmt.Errorf("merged set is inconsistent: %s", strings.Join(errs, "; "))
 	}
 	data, err := mr.Doc.Encode()
 	if err != nil {
@@ -398,10 +401,107 @@ func (p *Project) merge(vs map[string]*Version, me, h string, d Device, res map[
 	if err := writeFileAtomic(p.WorkingPath(), data); err != nil {
 		return nil, nil, nil, err
 	}
-	summary := summarize("scalenie z "+d.Name, diffDocs(docs[1], mr.Doc))
+	summary := summarize("merge with "+d.Name, diffDocs(docs[1], mr.Doc))
 	v, err := p.writeVersion(data, []string{me, h}, summary)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	return v, nil, mr.Warnings, nil
+}
+
+// --- Dolaczanie z wlasna kopia ------------------------------------------------------
+
+// Adopt: dolaczam do sesji, majac juz wlasna kopie projektu (local - sciezka
+// bezwzgledna do mojego seta). Nie ma wspolnej historii, wiec scalamy dwie
+// wersje (als.Merge2): to, co jest tylko u jednej strony, wchodzi samo, a
+// elementy rozne po obu stronach wymagaja rozstrzygniecia (res). Wynik staje
+// sie moja pierwsza wersja z rodzicem = wersja zapraszajacego.
+func (p *Project) Adopt(local string, res map[string]als.Resolution) (*PullResult, error) {
+	if p.Head() != "" {
+		return nil, fmt.Errorf("you already have a version of this session")
+	}
+	vs, err := p.Versions()
+	if err != nil {
+		return nil, err
+	}
+	host, hv := p.newestPeerHead(vs)
+	if hv == nil {
+		return &PullResult{Incomplete: []Device{host}}, nil
+	}
+	hdoc, err := p.LoadDoc(hv)
+	if err != nil {
+		return nil, err
+	}
+	ldata, err := os.ReadFile(local)
+	if err != nil {
+		return nil, err
+	}
+	ldoc, err := als.Read(bytes.NewReader(ldata))
+	if err != nil {
+		return nil, fmt.Errorf("%s: can't read the set (is Live still saving?): %w", filepath.Base(local), err)
+	}
+	mr, err := als.Merge2(ldoc, hdoc, res)
+	if err != nil {
+		return nil, err
+	}
+	r := &PullResult{ConflictWith: host}
+	if fi, err := os.Stat(local); err == nil {
+		r.OursTime = fi.ModTime()
+	}
+	r.TheirsTime = hv.Time
+	if len(mr.Conflicts) > 0 {
+		r.Conflicts = mr.Conflicts
+		return r, nil
+	}
+	if errs := als.Validate(mr.Doc); len(errs) > 0 {
+		return nil, fmt.Errorf("merged set is inconsistent: %s", strings.Join(errs, "; "))
+	}
+	data, err := mr.Doc.Encode()
+	if err != nil {
+		return nil, err
+	}
+	// moj set przed scaleniem zostaje obok (sety nie sa synchronizowane)
+	name := strings.TrimSuffix(local, filepath.Ext(local))
+	r.Backup = fmt.Sprintf("%s (before merge %s).als", name, p.now().Local().Format("2006-01-02 150405"))
+	if err := writeFileAtomic(r.Backup, ldata); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(p.WorkingPath()), 0o755); err != nil {
+		return nil, err
+	}
+	if err := writeFileAtomic(p.WorkingPath(), data); err != nil {
+		return nil, err
+	}
+	v, err := p.writeVersion(data, []string{hv.ID}, summarize("merged my copy with "+host.Name, diffDocs(hdoc, mr.Doc)))
+	if err != nil {
+		return nil, err
+	}
+	r.Merged = []*Version{v}
+	r.Warnings = mr.Warnings
+	return r, nil
+}
+
+// newestPeerHead: najnowsza kompletna wersja innych uczestnikow (przy
+// dolaczaniu - zwykle zapraszajacego).
+func (p *Project) newestPeerHead(vs map[string]*Version) (Device, *Version) {
+	devs, _ := p.Devices()
+	var best *Version
+	var who Device
+	for _, d := range devs {
+		if d.ID == p.Me.ID {
+			continue
+		}
+		h := p.readHead(d.ID)
+		if h == "" {
+			continue
+		}
+		who = d
+		if !p.Complete(vs, h) {
+			continue
+		}
+		if v := vs[h]; best == nil || v.Time.After(best.Time) {
+			best, who = v, d
+		}
+	}
+	return who, best
 }

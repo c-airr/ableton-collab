@@ -404,3 +404,48 @@ func TestSetInSubfolder(t *testing.T) {
 		}
 	}
 }
+
+// Dolaczanie z wlasna kopia: host ma theirs (zmienione hihaty), gosc ma
+// u siebie ours (dodana gitara) - bez wspolnej historii w abcollab.
+func TestAdoptOwnCopy(t *testing.T) {
+	host := initPerson(t, "Host", testdata(t, "theirs.als"))
+	g := joinPerson(t, "Gosc", host)
+	local := g.p.WorkingPath()
+	own := testdata(t, "ours.als")
+	os.WriteFile(local, own, 0o644)
+
+	r, err := g.p.Adopt(local, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Conflicts) != 1 || !strings.Contains(r.Conflicts[0].UnitLabel, "Hats") || r.TheirsTime.IsZero() || r.OursTime.IsZero() {
+		t.Fatalf("konflikty: %+v", r.Conflicts)
+	}
+	if g.p.Head() != "" {
+		t.Fatal("konflikt, a wersja zapisana")
+	}
+	r, err = g.p.Adopt(local, map[string]als.Resolution{r.Conflicts[0].ID: als.Theirs})
+	if err != nil || len(r.Merged) != 1 || r.Backup == "" {
+		t.Fatalf("%v %+v", err, r)
+	}
+	if b, _ := os.ReadFile(r.Backup); !bytes.Equal(b, own) {
+		t.Error("brak kopii mojego seta sprzed scalenia")
+	}
+	doc := g.doc(t)
+	xml := string(doc.XMLBytes())
+	if !strings.Contains(xml, "8-12 String Guitar") {
+		t.Error("zgubiona moja gitara")
+	}
+	if d := als.Diff(host.doc(t), doc); len(d) == 0 {
+		t.Error("wynik identyczny z hostem - moje zmiany zgubione")
+	}
+	// host dostaje wynik jako zwykla nowa wersje (bez scalania)
+	syncDirs(t, host, g)
+	hr := mustPull(t, host, nil)
+	if len(hr.FastForwarded) != 1 {
+		t.Fatalf("host: %+v", hr)
+	}
+	if !bytes.Equal(host.working(t), g.working(t)) {
+		t.Error("host i gosc maja rozne sety")
+	}
+}

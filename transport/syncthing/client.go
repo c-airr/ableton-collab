@@ -205,3 +205,30 @@ func (c *Client) FolderStatus(id string) (*FolderStatus, error) {
 }
 
 func (c *Client) Shutdown() error { return c.do("POST", "/rest/system/shutdown", nil, nil) }
+
+func (c *Client) RemoveDevice(id string) error {
+	return c.do("DELETE", "/rest/config/devices/"+url.PathEscape(id), nil, nil)
+}
+
+func (c *Client) RemoveFolder(id string) error {
+	return c.do("DELETE", "/rest/config/folders/"+url.PathEscape(id), nil, nil)
+}
+
+type RawEvent struct {
+	ID   int            `json:"id"`
+	Type string         `json:"type"`
+	Time time.Time      `json:"time"`
+	Data map[string]any `json:"data"`
+}
+
+// RawEvents: long-poll /rest/events (czeka do timeout na nowe zdarzenia).
+func (c *Client) RawEvents(since int, timeout time.Duration) ([]RawEvent, error) {
+	q := fmt.Sprintf("/rest/events?since=%d&timeout=%d&events=ItemFinished,LocalIndexUpdated,DeviceConnected,DeviceDisconnected,PendingDevicesChanged",
+		since, int(timeout.Seconds()))
+	hc := *c.HTTP
+	hc.Timeout = timeout + 10*time.Second
+	cl := *c
+	cl.HTTP = &hc
+	var out []RawEvent
+	return out, cl.do("GET", q, nil, &out)
+}

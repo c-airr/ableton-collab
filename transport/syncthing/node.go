@@ -101,7 +101,7 @@ func (n *Node) spawn() error {
 		"--gui-address="+n.Base, "--gui-apikey="+n.Key, "--log-file="+filepath.Join(o.Home, "syncthing.log"))
 	detach(cmd)
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("uruchamianie Syncthinga: %w", err)
+		return fmt.Errorf("starting Syncthing: %w", err)
 	}
 	n.cmd, n.done = cmd, make(chan struct{})
 	go func() { cmd.Wait(); close(n.done) }()
@@ -109,7 +109,7 @@ func (n *Node) spawn() error {
 	for time.Now().Before(deadline) {
 		select {
 		case <-n.done:
-			return fmt.Errorf("Syncthing zakonczyl sie przy starcie - zobacz %s", filepath.Join(o.Home, "syncthing.log"))
+			return fmt.Errorf("Syncthing exited on start - see %s", filepath.Join(o.Home, "syncthing.log"))
 		case <-time.After(200 * time.Millisecond):
 		}
 		if n.Healthy() {
@@ -117,7 +117,7 @@ func (n *Node) spawn() error {
 		}
 	}
 	n.kill()
-	return errors.New("Syncthing nie odpowiada po 30 s")
+	return errors.New("Syncthing is not responding after 30 s")
 }
 
 // configure: nasze ustawienia (bez statystyk, bez auto-aktualizacji, nasze

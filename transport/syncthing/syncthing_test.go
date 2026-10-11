@@ -96,23 +96,23 @@ func TestPairing(t *testing.T) {
 		t.Fatal(err)
 	}
 	guestDir := filepath.Join(tmp, "guest", inv.Name)
-	gshare, err := guest.Join(inv, guestDir)
+	gshare, err := guest.Join(inv, guestDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := guest.Join(inv, guestDir); err == nil {
+	if _, err := guest.Join(inv, guestDir, false); err == nil {
 		t.Error("drugie dolaczenie do tego samego projektu przeszlo")
 	}
-	if _, err := host.Join(inv, filepath.Join(tmp, "x")); err == nil {
+	if _, err := host.Join(inv, filepath.Join(tmp, "x"), false); err == nil {
 		t.Error("dolaczenie wlasnym kodem przeszlo")
 	}
 	full := filepath.Join(tmp, "pelny")
 	os.MkdirAll(full, 0o755)
 	os.WriteFile(filepath.Join(full, "prywatne.txt"), []byte("x"), 0o644)
-	if _, err := stranger.Join(inv, full); err == nil {
+	if _, err := stranger.Join(inv, full, false); err == nil {
 		t.Error("dolaczenie do niepustego folderu przeszlo")
 	}
-	if _, err := stranger.Join(inv, filepath.Join(tmp, "stranger", "song")); err != nil {
+	if _, err := stranger.Join(inv, filepath.Join(tmp, "stranger", "song"), false); err != nil {
 		t.Fatal(err)
 	}
 	// bez discovery: adres hosta podajemy wprost
@@ -157,6 +157,10 @@ func TestPairing(t *testing.T) {
 		t.Error("set u goscia rozni sie od seta hosta")
 	}
 
+	// subskrypcja zdarzen (Syncthing zbiera je od pierwszego zapytania)
+	_, hNext, _ := hshare.Events(0, time.Second)
+	_, gNext, _ := gshare.Events(0, time.Second)
+
 	// lobby po obu stronach: polaczeni przez LAN; Obcy nie wraca jako prosba
 	waitFor(t, "lobby po akceptacji", func() bool {
 		hl, err1 := hshare.Lobby()
@@ -184,6 +188,28 @@ func TestPairing(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(hostDir, "inny Project", "inny.als")); err == nil {
 		t.Error("set z podfolderu przeszedl przez Syncthinga")
+	}
+
+	// log: u hosta "received", u goscia "sending"
+	var he, ge []Event
+	for i := 0; i < 30 && !(hasEvent(he, "received", "inny Project/Samples/bit.mp3") && hasEvent(ge, "sending", "inny Project/Samples/bit.mp3")); i++ {
+		var evs []Event
+		evs, hNext, _ = hshare.Events(hNext, time.Second)
+		he = append(he, evs...)
+		evs, gNext, _ = gshare.Events(gNext, time.Second)
+		ge = append(ge, evs...)
+	}
+	if !hasEvent(he, "received", "inny Project/Samples/bit.mp3") || !hasEvent(ge, "sending", "inny Project/Samples/bit.mp3") {
+		t.Fatalf("zdarzenia: host %+v gosc %+v", he, ge)
+	}
+
+	// host wyrzuca goscia: znika z lobby i nie wraca jako prosba
+	if err := hshare.Kick(Member{ID: guest.ID, Name: "Kolega"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * time.Second)
+	if hl, err := hshare.Lobby(); err != nil || len(hl.Members) != 0 || len(hl.Requests) != 0 {
+		t.Errorf("po kicku: %+v %v", hl, err)
 	}
 }
 
@@ -225,4 +251,13 @@ func TestExtractTopLevel(t *testing.T) {
 	if err != nil || string(got) != "binarka" {
 		t.Fatalf("%q %v", got, err)
 	}
+}
+
+func hasEvent(evs []Event, kind, file string) bool {
+	for _, e := range evs {
+		if e.Kind == kind && e.File == file {
+			return true
+		}
+	}
+	return false
 }

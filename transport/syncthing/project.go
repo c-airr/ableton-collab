@@ -65,17 +65,17 @@ func ParseInvite(s string) (Invite, error) {
 	}, s))
 	body, ok := strings.CutPrefix(s, invitePrefix)
 	if !ok {
-		return inv, errors.New("to nie jest kod zaproszenia abcollab (powinien zaczynac sie od " + invitePrefix + ")")
+		return inv, errors.New("that is not an abcollab invite code (it should start with " + invitePrefix + ")")
 	}
 	data, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(body)
 	if err != nil || json.Unmarshal(data, &inv) != nil {
-		return inv, errors.New("kod zaproszenia jest uciety albo przekrecony - skopiuj go jeszcze raz w calosci")
+		return inv, errors.New("the invite code is cut off or mistyped - copy the whole code again")
 	}
 	if !deviceIDRe.MatchString(inv.Device) || !folderIDRe.MatchString(inv.Folder) {
-		return inv, errors.New("kod zaproszenia ma niepoprawna tresc")
+		return inv, errors.New("the invite code is invalid")
 	}
-	inv.Name = cleanName(inv.Name, "projekt")
-	inv.Host = cleanName(inv.Host, "zapraszajacy")
+	inv.Name = cleanName(inv.Name, "session")
+	inv.Host = cleanName(inv.Host, "host")
 	return inv, nil
 }
 
@@ -105,7 +105,7 @@ func cleanName(s, def string) string {
 // nadpisywalby sobie nawzajem sety i tworzyl pliki sync-conflict.
 // Kolejnosc ma znaczenie (wygrywa pierwszy pasujacy wzorzec): wersje w
 // .abcollab/ tez maja koncowke .als, wiec sa wlaczone przed "*.als".
-const ignores = `// abcollab: nie edytuj - plik nadpisywany przy kazdym starcie
+const ignores = `// abcollab: do not edit - rewritten on every start
 *.tmp
 !/.abcollab
 *.als
@@ -142,7 +142,7 @@ func (n *Node) Share(dir, folderID, label string) (*Project, error) {
 	}
 	if f != nil {
 		if !samePath(f.Path, dir) {
-			return nil, fmt.Errorf("ten projekt jest juz udostepniany z innego folderu: %s", f.Path)
+			return nil, fmt.Errorf("this session is already shared from another folder: %s", f.Path)
 		}
 		return p, nil
 	}
@@ -153,23 +153,26 @@ func (n *Node) Share(dir, folderID, label string) (*Project, error) {
 // wspoldzielony z nim. Zapraszajacy widzi wtedy prosbe o dolaczenie; po
 // akceptacji Syncthing od razu zaczyna synchronizacje (folder ma to samo ID).
 // Zapraszajacy jest "introducerem": przedstawia nam pozostalych uczestnikow.
-func (n *Node) Join(inv Invite, dir string) (*Project, error) {
+// existing: folder z wlasnymi plikami (scalanie) - jego zawartosc poleci do
+// innych, wiec wolajacy musi go wczesniej sprawdzic (tui.InspectFolder);
+// bez tego tylko pusty albo nowy folder.
+func (n *Node) Join(inv Invite, dir string, existing bool) (*Project, error) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
 	}
 	if inv.Device == n.ID {
-		return nil, errors.New("to twoj wlasny kod zaproszenia - wyslij go koledze")
+		return nil, errors.New("that is your own invite code - send it to someone else")
 	}
 	if f, err := n.findFolder(inv.Folder); err != nil {
 		return nil, err
 	} else if f != nil {
-		return nil, fmt.Errorf("juz dolaczyles do tego projektu: %s", f.Path)
+		return nil, fmt.Errorf("you already joined this session: %s", f.Path)
 	}
 	// Tylko pusty albo nowy folder: Syncthing wyslalby zapraszajacemu
 	// wszystko, co juz w nim lezy (np. cale Dokumenty po pomylce).
-	if ents, err := os.ReadDir(dir); err == nil && len(ents) > 0 {
-		return nil, fmt.Errorf("folder %s nie jest pusty - wybierz nowy albo pusty folder na projekt", dir)
+	if ents, err := os.ReadDir(dir); err == nil && len(ents) > 0 && !existing {
+		return nil, fmt.Errorf("folder %s is not empty - pick a new or empty folder", dir)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -315,7 +318,7 @@ func (p *Project) Accept(r Request) error {
 		}
 	}
 	if len(f.Devices) >= MaxMembers {
-		return fmt.Errorf("lobby pelne (%d osob)", MaxMembers)
+		return fmt.Errorf("the session is full (%d people)", MaxMembers)
 	}
 	// urzadzenie moze juz byc znane z innego projektu - wtedy nie ruszamy jego ustawien
 	devs, err := p.n.Devices()
@@ -341,4 +344,157 @@ func (p *Project) Reject(r Request) error {
 	}
 	p.n.DismissPendingDevice(r.ID)
 	return nil
+}
+
+// Kick usuwa uczestnika z sesji: przestajemy mu udostepniac folder i
+// ignorujemy jego prosby. Pozostali, ktorzy znaja go przez nas
+// (introducer), tez go usuna.
+func (p *Project) Kick(m Member) error {
+	f, err := p.n.Folder(p.Folder)
+	if err != nil {
+		return err
+	}
+	var keep []FolderDevice
+	for _, d := range f.Devices {
+		if d.DeviceID != m.ID {
+			keep = append(keep, d)
+		}
+	}
+	if err := p.n.SetFolderDevices(p.Folder, keep); err != nil {
+		return err
+	}
+	// urzadzenie usuwamy calkiem, jesli nie dzielimy z nim innej sesji
+	fs, err := p.n.Folders()
+	if err != nil {
+		return err
+	}
+	shared := false
+	for _, f := range fs {
+		for _, d := range f.Devices {
+			shared = shared || d.DeviceID == m.ID
+		}
+	}
+	if !shared {
+		if err := p.n.RemoveDevice(m.ID); err != nil {
+			return err
+		}
+	}
+	return p.n.IgnoreDevice(m.ID, m.Name, "")
+}
+
+// Leave: przestajemy synchronizowac sesje (pliki zostaja na dysku).
+func (p *Project) Leave() error { return p.n.RemoveFolder(p.Folder) }
+
+// --- zdarzenia -----------------------------------------------------------------------
+
+// Event: zdarzenie Syncthinga dotyczace sesji (do logu).
+// Kind: "received", "sending", "deleted", "connected",
+// "disconnected", "request", "error".
+type Event struct {
+	ID   int
+	Time time.Time
+	Kind string
+	File string // sciezka wzgledem folderu sesji ("/")
+	Who  string // nazwa urzadzenia
+}
+
+// Events czeka (long-poll do timeout) na zdarzenia nowsze niz since i zwraca
+// te dotyczace tej sesji. Drugi wynik: ID do nastepnego wywolania.
+func (p *Project) Events(since int, timeout time.Duration) ([]Event, int, error) {
+	raw, err := p.n.RawEvents(since, timeout)
+	if err != nil {
+		return nil, since, err
+	}
+	names := map[string]string{}
+	if devs, err := p.n.Devices(); err == nil {
+		for _, d := range devs {
+			names[d.DeviceID] = d.Name
+		}
+	}
+	who := func(id string) string {
+		if n := names[id]; n != "" {
+			return n
+		}
+		return ShortID(id)
+	}
+	next := since
+	var out []Event
+	for _, e := range raw {
+		next = max(next, e.ID)
+		d := e.Data
+		ev := Event{ID: e.ID, Time: e.Time}
+		folder, _ := d["folder"].(string)
+		mine := folder == p.Folder
+		switch e.Type {
+		case "ItemFinished":
+			item, _ := d["item"].(string)
+			if !mine || internal(item) {
+				continue
+			}
+			ev.File = slash(item)
+			switch {
+			case d["error"] != nil:
+				ev.Kind = "error"
+			case d["action"] == "delete":
+				ev.Kind = "deleted"
+			default:
+				ev.Kind = "received"
+			}
+		case "LocalIndexUpdated":
+			if !mine {
+				continue
+			}
+			files, _ := d["filenames"].([]any)
+			for _, f := range files {
+				name, _ := f.(string)
+				if name == "" || internal(name) {
+					continue
+				}
+				out = append(out, Event{ID: e.ID, Time: e.Time, Kind: "sending", File: slash(name)})
+			}
+			continue
+		case "DeviceConnected", "DeviceDisconnected":
+			id, _ := d["id"].(string)
+			if !p.member(id) {
+				continue
+			}
+			ev.Who = who(id)
+			ev.Kind = map[string]string{"DeviceConnected": "connected", "DeviceDisconnected": "disconnected"}[e.Type]
+		case "PendingDevicesChanged":
+			added, _ := d["added"].([]any)
+			for _, a := range added {
+				m, _ := a.(map[string]any)
+				name, _ := m["name"].(string)
+				id, _ := m["deviceID"].(string)
+				out = append(out, Event{ID: e.ID, Time: e.Time, Kind: "request", Who: cleanName(name, ShortID(id))})
+			}
+			continue
+		default:
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out, next, nil
+}
+
+// slash: Syncthing na Windowsie podaje sciezki z "\\".
+func slash(name string) string { return strings.ReplaceAll(name, "\\", "/") }
+
+// internal: pliki abcollab/Syncthinga - nie pokazujemy ich w logu.
+func internal(name string) bool {
+	name = slash(name)
+	return strings.HasPrefix(name, ".abcollab") || strings.HasPrefix(name, ".st") || strings.Contains(name, "/.st")
+}
+
+func (p *Project) member(id string) bool {
+	f, err := p.n.Folder(p.Folder)
+	if err != nil {
+		return false
+	}
+	for _, d := range f.Devices {
+		if d.DeviceID == id {
+			return true
+		}
+	}
+	return false
 }

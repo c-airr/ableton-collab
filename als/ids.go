@@ -28,7 +28,7 @@ var trackRef = regexp.MustCompile(`Track\.(\d+)`)
 func remapIDs(base, ours, theirs *Doc) error {
 	bN, oN, tN := nextPointee(base), nextPointee(ours), nextPointee(theirs)
 	if bN == 0 {
-		return fmt.Errorf("brak NextPointeeId w bazie")
+		return fmt.Errorf("no NextPointeeId in base")
 	}
 	if oN > bN && tN > bN {
 		off := oN - bN

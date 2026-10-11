@@ -12,9 +12,9 @@ import (
 )
 
 func main() {
-	check := flag.Bool("check", false, "pokaz tez sample/wtyczki, ktore nie dotra do wspolpracownika (dla b.als)")
+	check := flag.Bool("check", false, "also list samples/plugins collaborators won't have (for b.als)")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "uzycie: alsdiff [-check] a.als b.als")
+		fmt.Fprintln(os.Stderr, "usage: alsdiff [-check] a.als b.als")
 		flag.PrintDefaults()
 	}
 	flag.Parse()

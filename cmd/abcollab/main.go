@@ -1,25 +1,20 @@
-// abcollab - wspolna praca nad projektem Ableton Live.
+// abcollab - work on one Ableton Live project together.
 //
-// Historia wersji lezy w folderze projektu (.abcollab/), a miedzy komputerami
+// Historia wersji lezy w folderze sesji (.abcollab/), a miedzy komputerami
 // przenosi ja dolaczony Syncthing (pobierany przy pierwszym uruchomieniu).
 // Z -offline dziala bez sieci - folder przenosi wtedy dowolny sync.
 //
-//	abcollab                    menu (projekty, nowy, dolacz) i TUI projektu
-//	abcollab join <kod>         dolacz do projektu kodem zaproszenia
-//	abcollab invite             wypisz kod zaproszenia do projektu
-//	abcollab init <set.als>     zaloz projekt w biezacym folderze
-//	abcollab status             moja wersja, niezapisane zmiany, inni
-//	abcollab commit             zapisz plik seta jako nowa wersje
-//	abcollab pull [-i] [-r ..]  pobierz i scal zmiany innych
-//	abcollab log [-n N]         historia
-//	abcollab whoami [-name X]   tozsamosc tego komputera
+//	abcollab                    panel (ostatnia sesja, Join/Host)
+//	abcollab join <code>        panel z otwartym dolaczaniem
+//	abcollab invite             wypisz kod zaproszenia
+//	abcollab init <set.als>     zaloz sesje w folderze
+//	abcollab status|commit|pull|log|whoami
 //
 // Kody wyjscia: 0 ok, 1 nierozwiazany konflikt, 2 blad.
 package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -28,28 +23,25 @@ import (
 	"strings"
 
 	"github.com/c-airr/ableton-collab/als"
-	"github.com/c-airr/ableton-collab/internal/tui"
 	"github.com/c-airr/ableton-collab/store"
 	"github.com/c-airr/ableton-collab/transport/syncthing"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `uzycie: abcollab [komenda] [-C folder] [opcje]
+	fmt.Fprintln(os.Stderr, `usage: abcollab [command] [-C folder] [options]
 
-  (bez komendy)       menu: twoje projekty, nowy projekt, dolaczanie
-                      -C folder: od razu ten projekt; -offline: bez sieci
-  join <kod>          dolacz do projektu kodem zaproszenia
-  invite              wypisz kod zaproszenia (prosby przyjmujesz w TUI)
-  init <set.als>      zaloz projekt w folderze z setem
-  status              moja wersja, niezapisane zmiany, inni uczestnicy
-  commit              zapisz aktualny set jako nowa wersje
+  (no command)        the panel: your last session, Join / Host
+                      -C folder: open this session; -offline: no network
+  join <code>         open the panel with joining started
+  invite              print an invite code (accept requests in the panel)
+  init <set.als>      make the folder with this set a session
+  status              my version, unsaved changes, other people
+  commit              save the current set as a new version
   pull [-i] [-r ID=ours|theirs|both]
-                      pobierz zmiany innych i scal (-i: pytaj przy konflikcie)
-  log [-n N]          historia wersji
-  whoami [-name X]    tozsamosc tego komputera
-  version             wersja programu`)
+                      get others' changes and merge (-i: ask on conflicts)
+  log [-n N]          version history
+  whoami [-name X]    this computer's identity
+  version             program version`)
 }
 
 func main() {
@@ -61,15 +53,27 @@ func main() {
 		cmd, args = "tui", os.Args[1:] // abcollab -C folder
 	}
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
-	dir := fs.String("C", ".", "folder projektu")
+	dir := fs.String("C", ".", "session folder")
 	var err error
 	switch cmd {
 	case "tui":
-		offline := fs.Bool("offline", false, "bez sieci (bez Syncthinga)")
+		offline := fs.Bool("offline", false, "no network (no Syncthing)")
 		fs.Parse(args)
-		direct := false
-		fs.Visit(func(f *flag.Flag) { direct = direct || f.Name == "C" })
-		err = runTUI(*dir, direct, *offline, "")
+		open := ""
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "C" {
+				open = *dir
+			}
+		})
+		if *offline && open == "" {
+			open = *dir
+		}
+		if open != "" {
+			if abs, err := filepath.Abs(open); err == nil {
+				open = abs
+			}
+		}
+		err = runTUI(open, *offline, "")
 	case "join":
 		var code string
 		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -79,7 +83,7 @@ func main() {
 		if code == "" {
 			code = strings.Join(fs.Args(), "")
 		}
-		err = runTUI(".", false, false, code)
+		err = runTUI("", false, code)
 	case "invite":
 		err = withProject(fs, dir, args, cmdInvite)
 	case "init":
@@ -89,15 +93,15 @@ func main() {
 	case "commit":
 		err = withProject(fs, dir, args, cmdCommit)
 	case "pull":
-		interactive := fs.Bool("i", false, "pytaj o kazdy konflikt")
+		interactive := fs.Bool("i", false, "ask about every conflict")
 		var rs multi
-		fs.Var(&rs, "r", "rozstrzygniecie: ID=ours|theirs|both (wiele razy)")
+		fs.Var(&rs, "r", "resolution: ID=ours|theirs|both (repeatable)")
 		err = withProject(fs, dir, args, func(p *store.Project) error { return cmdPull(p, *interactive, rs) })
 	case "log":
-		n := fs.Int("n", 20, "ile wersji")
+		n := fs.Int("n", 20, "how many versions")
 		err = withProject(fs, dir, args, func(p *store.Project) error { return cmdLog(p, *n) })
 	case "whoami":
-		name := fs.String("name", "", "zmien nazwe tego komputera")
+		name := fs.String("name", "", "change this computer's nickname")
 		fs.Parse(args)
 		err = cmdWhoami(*name)
 	case "version", "--version", "-version":
@@ -114,12 +118,12 @@ func main() {
 		os.Exit(1)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "blad:", err)
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(2)
 	}
 }
 
-var errConflict = errors.New("konflikt")
+var errConflict = errors.New("conflict")
 
 // version: ustawiane przy budowaniu wydania (-ldflags "-X main.version=v0.1.0").
 var version = "dev"
@@ -128,256 +132,6 @@ type multi []string
 
 func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(s string) error { *m = append(*m, s); return nil }
-
-// --- tozsamosc urzadzenia ----------------------------------------------------------
-
-func configDir() (string, error) {
-	if h := os.Getenv("ABCOLLAB_HOME"); h != "" {
-		return h, nil
-	}
-	d, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(d, "abcollab"), nil
-}
-
-func device() (store.Device, error) {
-	d, _, err := loadDevice()
-	return d, err
-}
-
-// loadDevice: tozsamosc tego komputera; isNew - wlasnie utworzona (pierwsze
-// uruchomienie, menu zapyta o nazwe).
-func loadDevice() (d store.Device, isNew bool, err error) {
-	dir, err := configDir()
-	if err != nil {
-		return d, false, err
-	}
-	path := filepath.Join(dir, "device.json")
-	if data, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(data, &d); err != nil || d.ID == "" {
-			return d, false, fmt.Errorf("%s uszkodzony", path)
-		}
-		return d, false, nil
-	}
-	name, _ := os.Hostname()
-	if name == "" {
-		name = "komputer"
-	}
-	d = store.NewDevice(name)
-	return d, true, saveDevice(path, d)
-}
-
-func saveDevice(path string, d store.Device) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, _ := json.MarshalIndent(d, "", "  ")
-	return os.WriteFile(path, append(data, '\n'), 0o644)
-}
-
-func cmdWhoami(name string) error {
-	d, err := device()
-	if err != nil {
-		return err
-	}
-	if name != "" {
-		d.Name = name
-		dir, _ := configDir()
-		if err := saveDevice(filepath.Join(dir, "device.json"), d); err != nil {
-			return err
-		}
-	}
-	fmt.Printf("%s (%s)\n", d.Name, d.ID)
-	return nil
-}
-
-// --- siec i TUI -------------------------------------------------------------------
-
-func startNode(d *store.Device) (*syncthing.Node, error) {
-	dir, err := configDir()
-	if err != nil {
-		return nil, err
-	}
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		return nil, err
-	}
-	exe, err := syncthing.Ensure(filepath.Join(cache, "abcollab"), func(s string) { fmt.Fprintln(os.Stderr, s) })
-	if err != nil {
-		return nil, err
-	}
-	fmt.Fprintln(os.Stderr, "uruchamianie Syncthinga...")
-	n, err := syncthing.Start(syncthing.Options{Home: filepath.Join(dir, "syncthing"), Exe: exe, Name: d.Name})
-	if err != nil {
-		return nil, err
-	}
-	if d.Peer != n.ID {
-		d.Peer = n.ID
-		if err := saveDevice(filepath.Join(dir, "device.json"), *d); err != nil {
-			n.Stop()
-			return nil, err
-		}
-	}
-	return n, nil
-}
-
-// share udostepnia projekt w Syncthingu i oglasza moje ID transportu w projekcie.
-func share(n *syncthing.Node, p *store.Project) (*syncthing.Project, error) {
-	sh, err := n.Share(p.Dir, syncthing.FolderID(p.Meta.ID), filepath.Base(p.Dir))
-	if err != nil {
-		return nil, err
-	}
-	p.Me.Peer = n.ID
-	return sh, p.Announce()
-}
-
-// defaultProjectsDir: tu powstaja projekty, do ktorych dolaczamy.
-func defaultProjectsDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "."
-	}
-	return filepath.Join(home, "Documents", "Ableton", "abcollab")
-}
-
-// browseFrom: start przegladarki folderow przy zakladaniu projektu.
-func browseFrom() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "."
-	}
-	for _, d := range []string{filepath.Join(home, "Documents", "Ableton"), filepath.Join(home, "Documents")} {
-		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
-			return d
-		}
-	}
-	return home
-}
-
-// runTUI: bez -C menu (projekty, nowy, dolacz); z -C od razu projekt.
-func runTUI(dir string, direct, offline bool, code string) error {
-	d, isNew, err := loadDevice()
-	if err != nil {
-		return err
-	}
-	if offline {
-		p, err := store.Open(dir, d)
-		if err != nil {
-			return err
-		}
-		return runProject(p, nil, false)
-	}
-	node, err := startNode(&d)
-	if err != nil {
-		return fmt.Errorf("%w\n(bez sieci, w folderze projektu: abcollab -offline)", err)
-	}
-	defer node.Stop()
-	if direct && code == "" {
-		p, err := store.Open(dir, d)
-		if err != nil {
-			return err
-		}
-		return runProject(p, node, false)
-	}
-	here := ""
-	if p, err := store.Open(dir, d); err == nil {
-		here = p.Dir
-	}
-	be := &backend{Node: node, me: &d}
-	res, err := tea.NewProgram(tui.NewStart(be, tui.StartOptions{
-		Me: d, AskName: isNew, BaseDir: defaultProjectsDir(), BrowseFrom: browseFrom(), Here: here, Code: code,
-	}), tea.WithAltScreen()).Run()
-	if err != nil {
-		return err
-	}
-	st := res.(tui.Start)
-	if st.Dir() == "" {
-		return nil
-	}
-	p, err := store.Open(st.Dir(), d)
-	if err != nil {
-		return err
-	}
-	return runProject(p, node, st.Created())
-}
-
-// backend: Node + tozsamosc dla menu (projekty zwracane jako tui.Network).
-type backend struct {
-	*syncthing.Node
-	me *store.Device
-}
-
-func (b *backend) Join(inv syncthing.Invite, dir string) (tui.Network, error) {
-	p, err := b.Node.Join(inv, dir)
-	if err != nil {
-		return nil, err
-	}
-	return p, nil
-}
-
-func (b *backend) Share(dir, folderID, label string) (tui.Network, error) {
-	p, err := b.Node.Share(dir, folderID, label)
-	if err != nil {
-		return nil, err
-	}
-	return p, nil
-}
-
-func (b *backend) Rename(name string) error {
-	dir, err := configDir()
-	if err != nil {
-		return err
-	}
-	b.me.Name = name
-	if err := saveDevice(filepath.Join(dir, "device.json"), *b.me); err != nil {
-		return err
-	}
-	return b.Node.PatchDevice(b.Node.ID, map[string]any{"name": name})
-}
-
-// Create udostepnia folder sesji (sprawdzony wczesniej przez tui.InspectFolder)
-// z setem set (wzgledem dir) albo otwiera projekt, ktory juz tam jest.
-func (b *backend) Create(dir, set string) (string, error) {
-	p, err := store.Open(dir, *b.me)
-	switch {
-	case err == nil:
-		if set != "" && p.Meta.Set != set {
-			return "", fmt.Errorf("w tym folderze jest juz projekt abcollab z setem %s", p.Meta.Set)
-		}
-	case errors.Is(err, store.ErrNotProject):
-		if set == "" {
-			return "", errors.New("w folderze nie ma seta")
-		}
-		if p, _, err = store.Init(dir, set, *b.me); err != nil {
-			return "", err
-		}
-	default:
-		return "", err
-	}
-	if _, err := share(b.Node, p); err != nil {
-		return "", err
-	}
-	return p.Dir, nil
-}
-
-func runProject(p *store.Project, node *syncthing.Node, invite bool) error {
-	var net tui.Network // nil bez sieci (nie *syncthing.Project(nil) - to nie byloby nil)
-	if node != nil {
-		sh, err := share(node, p)
-		if err != nil {
-			return err
-		}
-		net = sh
-	}
-	m := tui.New(p, net)
-	if invite {
-		m = m.ShowInvite()
-	}
-	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
-	return err
-}
 
 func cmdInvite(p *store.Project) error {
 	node, err := startNode(&p.Me)
@@ -390,9 +144,9 @@ func cmdInvite(p *store.Project) error {
 		return err
 	}
 	fmt.Println(sh.Invite(p.Me.Name))
-	fmt.Fprintln(os.Stderr, "\nWyslij ten kod osobie, ktora zapraszasz. Ona wpisuje abcollab > Dolacz do projektu.")
-	fmt.Fprintln(os.Stderr, "Prosbe przyjmujesz w abcollab (zakladka Lobby) - musi byc wtedy wlaczony.")
-	fmt.Fprintf(os.Stderr, "Twoj kod urzadzenia: %s\n", syncthing.ShortID(node.ID))
+	fmt.Fprintln(os.Stderr, "\nSend this code to the person you're inviting - they press Join in abcollab and paste it.")
+	fmt.Fprintln(os.Stderr, "You accept their request in the abcollab panel (it has to be open then).")
+	fmt.Fprintf(os.Stderr, "Your device code: %s\n", syncthing.ShortID(node.ID))
 	return nil
 }
 
@@ -411,6 +165,22 @@ func withProject(fs *flag.FlagSet, dir *string, args []string, fn func(*store.Pr
 	return fn(p)
 }
 
+func cmdWhoami(name string) error {
+	d, err := device()
+	if err != nil {
+		return err
+	}
+	if name != "" {
+		d.Name = name
+		dir, _ := configDir()
+		if err := saveDevice(filepath.Join(dir, "device.json"), d); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("%s (%s)\n", d.Name, d.ID)
+	return nil
+}
+
 func cmdInit(fs *flag.FlagSet, dir *string, args []string) error {
 	// set moze byc przed albo po flagach
 	var set string
@@ -422,7 +192,7 @@ func cmdInit(fs *flag.FlagSet, dir *string, args []string) error {
 		set = fs.Arg(0)
 	}
 	if set == "" {
-		return fmt.Errorf("podaj plik seta: abcollab init <set.als>")
+		return fmt.Errorf("give the set file: abcollab init <set.als>")
 	}
 	d, err := device()
 	if err != nil {
@@ -432,8 +202,8 @@ func cmdInit(fs *flag.FlagSet, dir *string, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("projekt zalozony: %s, set %s, wersja %s\n", p.Dir, p.Meta.Set, v.Short())
-	fmt.Println("uruchom abcollab i zapros wspolpracownikow w zakladce Lobby (i)")
+	fmt.Printf("session created: %s, set %s, version %s\n", p.Dir, p.Meta.Set, v.Short())
+	fmt.Println("run abcollab and press Invite to bring people in")
 	if ws := assetWarnings(p); len(ws) > 0 {
 		for _, w := range ws {
 			fmt.Println(w)
@@ -455,17 +225,17 @@ func cmdStatus(p *store.Project) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("projekt: %s (set %s)\nja: %s\n", p.Dir, p.Meta.Set, p.Me.Name)
+	fmt.Printf("session: %s (set %s)\nme: %s\n", p.Dir, p.Meta.Set, p.Me.Name)
 	if st.Head == nil {
-		fmt.Println("wersja: brak - zrob `abcollab pull`, zeby pobrac projekt")
+		fmt.Println("version: none - run `abcollab pull` to get the session")
 	} else {
-		fmt.Printf("wersja: %s (%s, %s)\n", st.Head.Short(), st.Head.Author, st.Head.Time.Local().Format("2006-01-02 15:04"))
+		fmt.Printf("version: %s (%s, %s)\n", st.Head.Short(), st.Head.Author, st.Head.Time.Local().Format("2006-01-02 15:04"))
 	}
 	if len(st.Changes) > 0 {
-		fmt.Printf("\nniezapisane w historii zmiany (%d) - `abcollab commit`:\n", len(st.Changes))
+		fmt.Printf("\nunsaved changes (%d) - `abcollab commit`:\n", len(st.Changes))
 		for i, c := range st.Changes {
 			if i == 10 {
-				fmt.Printf("  ... i %d wiecej\n", len(st.Changes)-10)
+				fmt.Printf("  ... and %d more\n", len(st.Changes)-10)
 				break
 			}
 			fmt.Println("  " + c.String())
@@ -473,7 +243,7 @@ func cmdStatus(p *store.Project) error {
 	}
 	fmt.Println()
 	if len(st.Peers) == 0 {
-		fmt.Println("inni: nikt jeszcze nie dolaczyl")
+		fmt.Println("others: nobody joined yet")
 	}
 	for _, ps := range st.Peers {
 		line := fmt.Sprintf("  %-20s %s", ps.Device.Name, ps.Relation)
@@ -487,17 +257,17 @@ func cmdStatus(p *store.Project) error {
 
 func cmdCommit(p *store.Project) error {
 	if p.Head() == "" {
-		return fmt.Errorf("najpierw `abcollab pull` - nie masz jeszcze wersji tego projektu")
+		return fmt.Errorf("run `abcollab pull` first - you don't have a version of this session yet")
 	}
 	v, err := p.Commit()
 	if err != nil {
 		return err
 	}
 	if v == nil {
-		fmt.Println("brak zmian")
+		fmt.Println("no changes")
 		return nil
 	}
-	fmt.Printf("wersja %s:\n", v.Short())
+	fmt.Printf("version %s:\n", v.Short())
 	for _, s := range v.Summary {
 		fmt.Println("  " + s)
 	}
@@ -509,7 +279,7 @@ func cmdPull(p *store.Project, interactive bool, rs multi) error {
 	for _, r := range rs {
 		id, choice, ok := strings.Cut(r, "=")
 		if !ok {
-			return fmt.Errorf("-r %q: oczekiwano ID=wybor", r)
+			return fmt.Errorf("-r %q: expected ID=choice", r)
 		}
 		c, err := als.ParseResolution(choice)
 		if err != nil {
@@ -528,16 +298,16 @@ func cmdPull(p *store.Project, interactive bool, rs multi) error {
 			return nil
 		}
 		if !interactive {
-			fmt.Fprintf(os.Stderr, "\n%d konflikt(y) z %s - nic dla tej osoby nie zostalo zapisane\n\n", len(r.Conflicts), r.ConflictWith.Name)
+			fmt.Fprintf(os.Stderr, "\n%d conflict(s) with %s - nothing from them was saved\n\n", len(r.Conflicts), r.ConflictWith.Name)
 			for _, c := range r.Conflicts {
 				fmt.Fprint(os.Stderr, c)
-				fmt.Fprintf(os.Stderr, "  rozstrzygniecie: -r '%s=%s'\n\n", c.ID, choices(c))
+				fmt.Fprintf(os.Stderr, "  resolve with: -r '%s=%s'\n\n", c.ID, choices(c))
 			}
-			fmt.Fprintln(os.Stderr, "uruchom `abcollab pull -i`, zeby wybrac interaktywnie")
+			fmt.Fprintln(os.Stderr, "run `abcollab pull -i` to choose interactively")
 			return errConflict
 		}
 		for _, c := range r.Conflicts {
-			fmt.Fprintf(os.Stderr, "\nkonflikt z %s\n", r.ConflictWith.Name)
+			fmt.Fprintf(os.Stderr, "\nconflict with %s\n", r.ConflictWith.Name)
 			fmt.Fprint(os.Stderr, c)
 			res[c.ID] = ask(in, c)
 		}
@@ -552,14 +322,14 @@ func choices(c als.Conflict) string {
 }
 
 func ask(in *bufio.Scanner, c als.Conflict) als.Resolution {
-	prompt := "  [o] zachowaj moje  [t] zachowaj ich"
+	prompt := "  [o] keep mine  [t] keep theirs"
 	if c.CanBoth {
-		prompt += "  [b] zachowaj oba (klip ich do wolnego slotu)"
+		prompt += "  [b] keep both (their clip to a free slot)"
 	}
 	for {
 		fmt.Fprint(os.Stderr, prompt+": ")
 		if !in.Scan() {
-			fmt.Fprintln(os.Stderr, "\nprzerwano")
+			fmt.Fprintln(os.Stderr, "\ncancelled")
 			os.Exit(1)
 		}
 		r, err := als.ParseResolution(in.Text())
@@ -571,16 +341,16 @@ func ask(in *bufio.Scanner, c als.Conflict) als.Resolution {
 
 func report(p *store.Project, r *store.PullResult) {
 	if r.Committed != nil {
-		fmt.Printf("zapisano twoje zmiany jako wersje %s\n", r.Committed.Short())
+		fmt.Printf("saved your changes as version %s\n", r.Committed.Short())
 	}
 	if r.Backup != "" {
-		fmt.Printf("twoj dotychczasowy set skopiowany do: %s\n", r.Backup)
+		fmt.Printf("your previous set was copied to: %s\n", r.Backup)
 	}
 	for _, d := range r.FastForwarded {
-		fmt.Printf("przyjeto zmiany od %s\n", d.Name)
+		fmt.Printf("got changes from %s\n", d.Name)
 	}
 	for _, v := range r.Merged {
-		fmt.Printf("scalono (wersja %s):\n", v.Short())
+		fmt.Printf("merged (version %s):\n", v.Short())
 		for _, s := range v.Summary {
 			fmt.Println("  " + s)
 		}
@@ -589,13 +359,13 @@ func report(p *store.Project, r *store.PullResult) {
 		fmt.Println(w)
 	}
 	for _, d := range r.Incomplete {
-		fmt.Printf("zmiany od %s jeszcze sie synchronizuja - sprobuj za chwile\n", d.Name)
+		fmt.Printf("changes from %s are still arriving - try again in a moment\n", d.Name)
 	}
 	if r.WorkingChanged() {
-		fmt.Printf("\n%s zostal zaktualizowany. Jesli masz go otwartego w Live, otworz go ponownie\n", p.Meta.Set)
-		fmt.Println("(File > Open Recent) i NIE zapisuj starej wersji - nadpisalbys zmiany innych.")
+		fmt.Printf("\n%s was updated. If it's open in Live, reopen it\n", p.SetName())
+		fmt.Println("(File > Open Recent) and DON'T save the old one - you'd overwrite the others' changes.")
 	} else if len(r.Conflicts) == 0 && len(r.Incomplete) == 0 && r.Committed == nil {
-		fmt.Println("wszystko aktualne")
+		fmt.Println("everything is up to date")
 	}
 }
 
@@ -615,12 +385,12 @@ func cmdLog(p *store.Project, n int) error {
 		}
 		kind := ""
 		if len(v.Parents) > 1 {
-			kind = " [scalenie]"
+			kind = " [merge]"
 		}
 		fmt.Printf("%s %s  %s  %s%s\n", mark, v.Short(), v.Time.Local().Format("2006-01-02 15:04"), v.Author, kind)
 		for j, s := range v.Summary {
 			if j == 3 {
-				fmt.Printf("      ... (%d linii)\n", len(v.Summary))
+				fmt.Printf("      ... (%d lines)\n", len(v.Summary))
 				break
 			}
 			if len(s) > 120 {

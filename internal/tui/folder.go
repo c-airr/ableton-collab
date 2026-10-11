@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -12,103 +14,14 @@ import (
 	"github.com/c-airr/ableton-collab/store"
 )
 
-// --- przegladarka folderow ------------------------------------------------------------
-
-// browser: lista podfolderow do chodzenia strzalkami. Pusta sciezka na
-// Windowsie = lista dyskow.
-type browser struct {
-	path  string
-	dirs  []string
-	files int // plikow w biezacym folderze (bez podfolderow)
-	cur   int
-	err   error
-}
-
-func newBrowser(path string) browser {
-	b := browser{path: path}
-	b.load()
-	return b
-}
-
-func (b *browser) load() {
-	b.dirs, b.files, b.cur, b.err = nil, 0, 0, nil
-	if b.path == "" {
-		b.dirs = drives()
-		return
-	}
-	ents, err := os.ReadDir(b.path)
-	if err != nil {
-		b.err = err
-		return
-	}
-	for _, e := range ents {
-		name := e.Name()
-		switch {
-		case strings.HasPrefix(name, ".") || strings.HasPrefix(name, "$"):
-		case e.IsDir():
-			b.dirs = append(b.dirs, name)
-		default:
-			b.files++
-		}
-	}
-	sort.Slice(b.dirs, func(i, j int) bool { return strings.ToLower(b.dirs[i]) < strings.ToLower(b.dirs[j]) })
-}
-
-// up: folder wyzej; zwraca nazwe folderu, z ktorego wyszlismy (kursor na nim).
-func (b *browser) up() {
-	if b.path == "" {
-		return
-	}
-	parent := filepath.Dir(b.path)
-	from := filepath.Base(b.path)
-	if parent == b.path { // korzen dysku
-		if runtime.GOOS != "windows" {
-			return
-		}
-		parent, from = "", b.path
-	}
-	b.path = parent
-	b.load()
-	for i, d := range b.dirs {
-		if strings.EqualFold(d, from) {
-			b.cur = i
-		}
-	}
-}
-
-func (b *browser) enter() {
-	if len(b.dirs) == 0 {
-		return
-	}
-	if b.path == "" {
-		b.path = b.dirs[b.cur]
-	} else {
-		b.path = filepath.Join(b.path, b.dirs[b.cur])
-	}
-	b.load()
-}
-
-func drives() []string {
-	var out []string
-	for c := 'A'; c <= 'Z'; c++ {
-		d := string(c) + `:\`
-		if _, err := os.Stat(d); err == nil {
-			out = append(out, d)
-		}
-	}
-	return out
-}
-
-// --- sprawdzenie folderu sesji -----------------------------------------------------------
-
 // FolderInfo: co jest w folderze, ktory ma byc wspoldzielony w calosci.
 type FolderInfo struct {
 	Dir     string
-	Sets    []string // sety (.als) wzgledem Dir, bez kopii z Backup/
+	Sets    []string // sety (.als) wzgledem Dir ("/"), bez kopii z Backup/
 	Files   int
 	Bytes   int64
 	More    bool // przerwano liczenie (bardzo duzy folder)
-	Project bool // juz jest projektem abcollab
+	Project bool // juz jest sesja abcollab
 }
 
 // Big: tyle danych, ze warto zapytac, zanim wszystko poleci do innych.
@@ -118,27 +31,27 @@ func (f FolderInfo) Big() bool { return f.More || f.Files > 5000 || f.Bytes > 2<
 // wyslalaby innym cale Dokumenty albo biblioteke Live'a.
 func forbidden(dir string) string {
 	if filepath.Dir(dir) == dir {
-		return "to caly dysk"
+		return "it's a whole drive"
 	}
 	home, _ := os.UserHomeDir()
 	if home != "" {
 		for _, sub := range []string{"", "Documents", "Desktop", "Downloads", "Music", "Pictures", "Videos",
 			"OneDrive", filepath.Join("OneDrive", "Documents"), filepath.Join("Documents", "Ableton"), filepath.Join("Music", "Ableton")} {
 			if samePath(dir, filepath.Join(home, sub)) {
-				return "to caly folder " + filepath.Join(filepath.Base(home), sub)
+				return "it's your whole " + filepath.Join(filepath.Base(home), sub) + " folder"
 			}
 		}
 		if rel, err := filepath.Rel(dir, home); err == nil && !strings.HasPrefix(rel, "..") {
-			return "w nim jest twoj folder domowy"
+			return "your home folder is inside it"
 		}
 	}
 	for d := dir; ; d = filepath.Dir(d) {
 		if filepath.Base(d) == "User Library" || filepath.Base(d) == "Factory Packs" {
-			return "to biblioteka Live'a"
+			return "it's Live's library"
 		}
 		if d != dir {
 			if _, err := os.Stat(filepath.Join(d, store.Dir, "project.json")); err == nil {
-				return "jest w srodku innego projektu abcollab (" + d + ")"
+				return "it's inside another session (" + d + ")"
 			}
 		}
 		if filepath.Dir(d) == d {
@@ -157,7 +70,7 @@ func InspectFolder(dir string) (FolderInfo, error) {
 	}
 	info := FolderInfo{Dir: dir}
 	if why := forbidden(dir); why != "" {
-		return info, fmt.Errorf("tego folderu nie mozna udostepnic: %s. Wybierz albo zaloz (+) osobny folder na sesje", why)
+		return info, fmt.Errorf("you can't share this folder: %s. Pick or create a separate folder for the session", why)
 	}
 	if _, err := os.Stat(filepath.Join(dir, store.Dir, "project.json")); err == nil {
 		info.Project = true
@@ -171,6 +84,9 @@ func InspectFolder(dir string) (FolderInfo, error) {
 			if p != dir && (d.Name() == store.Dir || d.Name() == "Backup" || strings.HasPrefix(d.Name(), ".st")) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if hidden(d.Name()) {
 			return nil
 		}
 		info.Files++
@@ -199,9 +115,59 @@ func setReady(dir, set string) bool {
 }
 
 func humanCount(f FolderInfo) string {
-	s := fmt.Sprintf("%d plikow, %s", f.Files, humanBytes(f.Bytes))
+	s := fmt.Sprintf("%d files, %s", f.Files, humanBytes(f.Bytes))
 	if f.More {
-		s = "ponad " + s
+		s = "over " + s
 	}
 	return s
+}
+
+func drives() []string {
+	var out []string
+	for c := 'A'; c <= 'Z'; c++ {
+		d := string(c) + `:\`
+		if _, err := os.Stat(d); err == nil {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// cleanPath: sciezka wpisana albo przeciagnieta do terminala (bywa w cudzyslowach).
+func cleanPath(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "& ") // PowerShell po przeciagnieciu pliku
+	return strings.Trim(s, `"'`)
+}
+
+func samePath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	return a == b || os.PathSeparator == '\\' && strings.EqualFold(a, b)
+}
+
+// clipboard: podmieniany w testach, zeby nie ruszac schowka uzytkownika.
+var clipboard = copyToClipboard
+
+// copyToClipboard: schowek systemowy przez narzedzia systemu (bez cgo).
+func copyToClipboard(s string) error {
+	var cmds [][]string
+	switch runtime.GOOS {
+	case "windows":
+		cmds = [][]string{{"clip"}}
+	case "darwin":
+		cmds = [][]string{{"pbcopy"}}
+	default:
+		cmds = [][]string{{"wl-copy"}, {"xclip", "-selection", "clipboard"}, {"xsel", "--clipboard", "--input"}}
+	}
+	for _, c := range cmds {
+		if _, err := exec.LookPath(c[0]); err != nil {
+			continue
+		}
+		cmd := exec.Command(c[0], c[1:]...)
+		cmd.Stdin = strings.NewReader(s)
+		if cmd.Run() == nil {
+			return nil
+		}
+	}
+	return errors.New("no clipboard")
 }

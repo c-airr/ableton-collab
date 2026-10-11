@@ -97,7 +97,7 @@ func AssetWarnings(d *Doc, projectDir string) []Warning {
 		switch s.Where {
 		case "external":
 			out = append(out, Warning{"external-sample", fmt.Sprintf(
-				"sample spoza folderu projektu: %s - uzyj File > Collect All and Save", s.Path)})
+				"sample outside the session folder: %s - use File > Collect All and Save", s.Path)})
 		case "pack":
 			packs[s.Pack]++
 		}
@@ -107,10 +107,10 @@ func AssetWarnings(d *Doc, projectDir string) []Warning {
 			continue // Core Library ma kazdy Live (zawartosc zalezy od edycji)
 		}
 		out = append(out, Warning{"pack-sample", fmt.Sprintf(
-			"%d sampli z paczki %q - wspolpracownik musi miec ja zainstalowana", n, p)})
+			"%d samples from pack %q - everyone needs it installed", n, p)})
 	}
 	if ps := Plugins(d); len(ps) > 0 {
-		out = append(out, Warning{"plugins", "wtyczki w projekcie (kazdy musi je miec): " + strings.Join(ps, ", ")})
+		out = append(out, Warning{"plugins", "plugins in the set (everyone needs them): " + strings.Join(ps, ", ")})
 	}
 	return out
 }

@@ -155,7 +155,7 @@ func ParseXML(r io.Reader) (*Doc, error) {
 			}
 			if len(stack) == 0 {
 				if doc.Root != nil {
-					return nil, fmt.Errorf("wiecej niz jeden element glowny")
+					return nil, fmt.Errorf("more than one root element")
 				}
 				doc.Root = n
 			} else {
@@ -165,7 +165,7 @@ func ParseXML(r io.Reader) (*Doc, error) {
 			stack = append(stack, n)
 		case xml.EndElement:
 			if len(stack) == 0 {
-				return nil, fmt.Errorf("niesparowany </%s>", t.Name.Local)
+				return nil, fmt.Errorf("unmatched </%s>", t.Name.Local)
 			}
 			stack = stack[:len(stack)-1]
 		case xml.CharData:
@@ -175,7 +175,7 @@ func ParseXML(r io.Reader) (*Doc, error) {
 		}
 	}
 	if doc.Root == nil {
-		return nil, fmt.Errorf("brak elementu glownego")
+		return nil, fmt.Errorf("no root element")
 	}
 	// tekst z samych bialych znakow to tylko formatowanie
 	doc.Root.Walk(func(n *Node) {

@@ -20,7 +20,7 @@ type Warning struct {
 	Message string
 }
 
-func (w Warning) String() string { return "UWAGA: " + w.Message }
+func (w Warning) String() string { return "WARNING: " + w.Message }
 
 // Merge scala trzy wersje bez rozstrzygania konfliktow.
 // Wejsciowe dokumenty nie sa modyfikowane.
@@ -103,7 +103,7 @@ func (m *merger) node(b, o, t *Node) (*Node, error) {
 		return t.Clone(), nil
 	}
 	if atomicElems[b.Name] {
-		return nil, fmt.Errorf("%s: obie strony zmienily blob", b.Name)
+		return nil, fmt.Errorf("%s: both sides changed the blob", b.Name)
 	}
 	res := &Node{Name: o.Name}
 	// atrybuty: 3-way per atrybut
@@ -115,7 +115,7 @@ func (m *merger) node(b, o, t *Node) (*Node, error) {
 		if tok && !noise && a.Value == bv && tv != bv {
 			v = tv
 		} else if tok && !noise && a.Value != bv && tv != bv && tv != a.Value {
-			return nil, fmt.Errorf("%s@%s: obie strony zmienily", o.Name, a.Name)
+			return nil, fmt.Errorf("%s@%s: both sides changed", o.Name, a.Name)
 		}
 		res.Attrs = append(res.Attrs, Attr{a.Name, v})
 	}
@@ -201,7 +201,7 @@ func (m *merger) children(b, o, t *Node) ([]*Node, error) {
 			out = append(out, n)
 		case inO && inT: // dodane po obu stronach
 			if !m.h.eq(on, tn) {
-				return nil, fmt.Errorf("%s: dodane rozne elementy po obu stronach", k)
+				return nil, fmt.Errorf("%s: different elements added on both sides", k)
 			}
 			out = append(out, on.Clone())
 		case inO && !inB: // dodane w ours
@@ -210,11 +210,11 @@ func (m *merger) children(b, o, t *Node) ([]*Node, error) {
 			out = append(out, tn.Clone())
 		case inO && inB && !inT: // usuniete w theirs
 			if !m.h.eq(bn, on) && !isNoiseElem(on) {
-				return nil, fmt.Errorf("%s: usuniete w theirs, zmienione w ours", k)
+				return nil, fmt.Errorf("%s: removed in theirs, changed in ours", k)
 			}
 		case inT && inB && !inO: // usuniete w ours
 			if !m.h.eq(bn, tn) && !isNoiseElem(tn) {
-				return nil, fmt.Errorf("%s: usuniete w ours, zmienione w theirs", k)
+				return nil, fmt.Errorf("%s: removed in ours, changed in theirs", k)
 			}
 		}
 	}
@@ -261,7 +261,7 @@ func duplicateTrackWarnings(base, o, t *Doc) []Warning {
 		id, _ := tr.Attr("Id")
 		if !inBase[tr.Name+"#"+id] && added[sig(tr)] {
 			out = append(out, Warning{"duplicate-track", fmt.Sprintf(
-				"obie strony dodaly sciezke %q z tym samym instrumentem - w wyniku sa obie", trackName(tr))})
+				"both sides added track %q with the same instrument - both are kept", trackName(tr))})
 		}
 	}
 	return out

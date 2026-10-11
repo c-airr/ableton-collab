@@ -124,7 +124,7 @@ func TestResolveBothNoFreeSlot(t *testing.T) {
 	}
 	id := mustMerge(t, b, o, th, nil).Conflicts[0].ID
 	if _, err := MergeWith(b.doc(t), o.doc(t), th.doc(t), map[string]Resolution{id: Both}); err == nil ||
-		!strings.Contains(err.Error(), "wolnego slotu") {
+		!strings.Contains(err.Error(), "no free slot") {
 		t.Fatalf("oczekiwany blad braku slotu, jest: %v", err)
 	}
 }

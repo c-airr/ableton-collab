@@ -50,6 +50,9 @@ type Device struct {
 
 type Meta struct {
 	ID string `json:"id"`
+	// Host: ID w transporcie (Syncthing) osoby, ktora zalozyla sesje - tylko
+	// ona moze wyrzucac uczestnikow.
+	Host string `json:"host,omitempty"`
 	// Set: sciezka seta (.als) wzgledem folderu projektu, z "/" niezaleznie od
 	// systemu. Moze byc w podfolderze - Live przy "Save As" do zwyklego
 	// folderu zaklada w nim "<nazwa> Project/".
@@ -84,7 +87,7 @@ type Project struct {
 	Now func() time.Time
 }
 
-var ErrNotProject = errors.New("to nie jest projekt abcollab (brak " + Dir + "/project.json) - uzyj init")
+var ErrNotProject = errors.New("not an abcollab session (no " + Dir + "/project.json)")
 
 func (p *Project) root() string            { return filepath.Join(p.Dir, Dir) }
 func (p *Project) devDir(id string) string { return filepath.Join(p.root(), "devices", id) }
@@ -127,16 +130,16 @@ func Init(dir, set string, me Device) (*Project, *Version, error) {
 		return nil, nil, err
 	}
 	if _, err := os.Stat(filepath.Join(dir, Dir, "project.json")); err == nil {
-		return nil, nil, fmt.Errorf("%s jest juz projektem abcollab", dir)
+		return nil, nil, fmt.Errorf("%s is already an abcollab session", dir)
 	}
 	set = filepath.ToSlash(set)
 	if !validSet(set) {
-		return nil, nil, fmt.Errorf("set musi byc plikiem .als wewnatrz folderu projektu, jest %q", set)
+		return nil, nil, fmt.Errorf("the set must be an .als file inside the session folder, got %q", set)
 	}
 	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(set))); err != nil {
 		return nil, nil, err
 	}
-	p := &Project{Dir: dir, Me: me, Meta: Meta{ID: newID(10), Set: set, Created: time.Now().UTC()}}
+	p := &Project{Dir: dir, Me: me, Meta: Meta{ID: newID(10), Host: me.Peer, Set: set, Created: time.Now().UTC()}}
 	if err := os.MkdirAll(p.root(), 0o755); err != nil {
 		return nil, nil, err
 	}
@@ -164,7 +167,7 @@ func Open(dir string, me Device) (*Project, error) {
 		return nil, err
 	}
 	if !validSet(p.Meta.Set) {
-		return nil, fmt.Errorf("project.json: niepoprawna nazwa seta %q", p.Meta.Set)
+		return nil, fmt.Errorf("project.json: invalid set path %q", p.Meta.Set)
 	}
 	return p, nil
 }
@@ -287,7 +290,7 @@ func (p *Project) objectPath(v *Version) string {
 // ObjectBytes czyta obiekt wersji i sprawdza jego sha256.
 func (p *Project) ObjectBytes(v *Version) ([]byte, error) {
 	if !validID(v.Object) {
-		return nil, fmt.Errorf("wersja %s: niepoprawny obiekt", v.Short())
+		return nil, fmt.Errorf("version %s: invalid object", v.Short())
 	}
 	data, err := os.ReadFile(p.objectPath(v))
 	if err != nil {
@@ -295,7 +298,7 @@ func (p *Project) ObjectBytes(v *Version) ([]byte, error) {
 	}
 	sum := sha256.Sum256(data)
 	if hex.EncodeToString(sum[:]) != v.Object {
-		return nil, fmt.Errorf("wersja %s: obiekt niekompletny albo uszkodzony", v.Short())
+		return nil, fmt.Errorf("version %s: object incomplete or damaged", v.Short())
 	}
 	return data, nil
 }

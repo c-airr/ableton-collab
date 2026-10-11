@@ -31,7 +31,7 @@
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ('abcollab-' + [guid]::NewGuid())
     New-Item -ItemType Directory -Path $tmp | Out-Null
     try {
-        Write-Host "pobieranie $asset..."
+        Write-Host "downloading $asset..."
         Invoke-WebRequest -Uri "$base/$asset" -OutFile (Join-Path $tmp $asset) -UseBasicParsing
         Invoke-WebRequest -Uri "$base/checksums.txt" -OutFile (Join-Path $tmp 'checksums.txt') -UseBasicParsing
 
@@ -41,20 +41,20 @@
             if ($parts.Count -ge 2 -and $parts[1].TrimStart('*') -eq $asset) { $want = $parts[0].ToLower() }
         }
         $got = (Get-FileHash -Path (Join-Path $tmp $asset) -Algorithm SHA256).Hash.ToLower()
-        if (-not $want -or $want -ne $got) { throw "zla suma sha256 pobranego $asset - przerywam" }
+        if (-not $want -or $want -ne $got) { throw "wrong sha256 of the downloaded $asset - aborting" }
 
         Expand-Archive -Path (Join-Path $tmp $asset) -DestinationPath (Join-Path $tmp 'x') -Force
         New-Item -ItemType Directory -Force -Path $dest | Out-Null
         try {
             Copy-Item -Path (Join-Path $tmp 'x\abcollab.exe') -Destination (Join-Path $dest 'abcollab.exe') -Force
         } catch {
-            throw "nie moge podmienic $dest\abcollab.exe - zamknij abcollab i sprobuj ponownie"
+            throw "can't replace $dest\abcollab.exe - close abcollab and try again"
         }
     } finally {
         Remove-Item -Recurse -Force -Path $tmp -ErrorAction SilentlyContinue
     }
     $ver = & (Join-Path $dest 'abcollab.exe') version
-    Write-Host "zainstalowano: $dest\abcollab.exe ($ver)"
+    Write-Host "installed: $dest\abcollab.exe ($ver)"
 
     if ($env:ABCOLLAB_NO_PATH -ne '1') {
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -62,10 +62,10 @@
         if (($userPath -split ';') -notcontains $dest) {
             $newPath = (($userPath.TrimEnd(';'), $dest) | Where-Object { $_ }) -join ';'
             [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-            Write-Host "dopisano $dest do PATH"
+            Write-Host "added $dest to PATH"
         }
         if (($env:Path -split ';') -notcontains $dest) { $env:Path += ";$dest" }
     }
     Write-Host ''
-    Write-Host 'Gotowe. Wpisz: abcollab'
+    Write-Host 'Done. Type: abcollab'
 }

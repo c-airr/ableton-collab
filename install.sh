@@ -24,12 +24,12 @@ fail() {
 case "$(uname -s)" in
 Linux) os=linux ;;
 Darwin) os=darwin ;;
-*) fail "nieobslugiwany system $(uname -s) - na Windowsie uzyj install.ps1" ;;
+*) fail "unsupported system $(uname -s) - on Windows use install.ps1" ;;
 esac
 case "$(uname -m)" in
 x86_64 | amd64) arch=amd64 ;;
 arm64 | aarch64) arch=arm64 ;;
-*) fail "nieobslugiwany procesor $(uname -m)" ;;
+*) fail "unsupported CPU $(uname -m)" ;;
 esac
 
 asset="abcollab-$os-$arch.tar.gz"
@@ -42,7 +42,7 @@ fetch() {
 	elif command -v wget >/dev/null 2>&1; then
 		wget -qO "$2" "$1"
 	else
-		fail "potrzebny curl albo wget"
+		fail "curl or wget is needed"
 	fi
 }
 
@@ -54,19 +54,19 @@ sha256() {
 	fi
 }
 
-echo "pobieranie $asset..."
-fetch "$BASE/$asset" "$tmp/$asset" || fail "nie udalo sie pobrac $BASE/$asset"
-fetch "$BASE/checksums.txt" "$tmp/checksums.txt" || fail "nie udalo sie pobrac sum kontrolnych"
+echo "downloading $asset..."
+fetch "$BASE/$asset" "$tmp/$asset" || fail "could not download $BASE/$asset"
+fetch "$BASE/checksums.txt" "$tmp/checksums.txt" || fail "could not download the checksums"
 want="$(grep " $asset\$" "$tmp/checksums.txt" | cut -d' ' -f1)"
 got="$(sha256 "$tmp/$asset")"
-[ -n "$want" ] && [ "$want" = "$got" ] || fail "zla suma sha256 pobranego $asset - przerywam"
+[ -n "$want" ] && [ "$want" = "$got" ] || fail "wrong sha256 of the downloaded $asset - aborting"
 
 tar -xzf "$tmp/$asset" -C "$tmp"
 mkdir -p "$DEST"
 cp "$tmp/abcollab" "$DEST/abcollab.new"
 chmod 755 "$DEST/abcollab.new"
 mv -f "$DEST/abcollab.new" "$DEST/abcollab"
-echo "zainstalowano: $DEST/abcollab ($("$DEST/abcollab" version 2>/dev/null || echo '?'))"
+echo "installed: $DEST/abcollab ($("$DEST/abcollab" version 2>/dev/null || echo '?'))"
 
 if [ "${ABCOLLAB_NO_PATH:-}" != "1" ]; then
 	case ":$PATH:" in
@@ -80,11 +80,11 @@ if [ "${ABCOLLAB_NO_PATH:-}" != "1" ]; then
 		line="export PATH=\"$DEST:\$PATH\" # abcollab"
 		if ! grep -qs "# abcollab" "$rc"; then
 			printf '\n%s\n' "$line" >>"$rc"
-			echo "dopisano $DEST do PATH w $rc"
+			echo "added $DEST to PATH in $rc"
 		fi
-		echo "otworz nowy terminal (albo: . $rc), zeby komenda byla widoczna"
+		echo "open a new terminal (or run: . $rc) so the command is found"
 		;;
 	esac
 fi
 echo
-echo "Gotowe. Wpisz: abcollab"
+echo "Done. Type: abcollab"

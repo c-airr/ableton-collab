@@ -35,7 +35,7 @@ func ParseResolution(s string) (Resolution, error) {
 	case "b", "both", "oba":
 		return Both, nil
 	}
-	return 0, fmt.Errorf("nieznany wybor %q (ours/theirs/both)", s)
+	return 0, fmt.Errorf("unknown choice %q (ours/theirs/both)", s)
 }
 
 type Conflict struct {
@@ -45,11 +45,14 @@ type Conflict struct {
 	CanBoth   bool // czy dostepne "zachowaj oba"
 	Ours      []Change
 	Theirs    []Change
+	// Wezly jednostki po obu stronach (nil - usuniety) - do podgladu, np.
+	// patternu klipu w oknie wyboru.
+	OursNode, TheirsNode *Node
 }
 
 func (c Conflict) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "KONFLIKT: %s\n", c.UnitLabel)
+	fmt.Fprintf(&b, "CONFLICT: %s\n", c.UnitLabel)
 	for _, ch := range c.Ours {
 		fmt.Fprintf(&b, "  ours:   %s\n", ch)
 	}
@@ -131,7 +134,8 @@ func findConflicts(o, t *Doc, oc, tc []Change) []Conflict {
 			}
 		}
 		if c == nil {
-			c = &Conflict{ID: strings.Join(p.path, "/"), Path: p.path, UnitLabel: p.label, CanBoth: canBoth(p.path)}
+			c = &Conflict{ID: strings.Join(p.path, "/"), Path: p.path, UnitLabel: p.label, CanBoth: canBoth(p.path),
+				OursNode: nodeAt(o, p.path), TheirsNode: nodeAt(t, p.path)}
 			out = append(out, c)
 		}
 		c.Ours = appendUnique(c.Ours, p.o)
@@ -189,12 +193,12 @@ func nodeAt(d *Doc, path []string) *Node {
 // jesli w src go nie ma).
 func copyAt(src, dst *Doc, path []string) error {
 	if len(path) < 2 {
-		return fmt.Errorf("nie mozna podmienic korzenia")
+		return fmt.Errorf("can't replace the root")
 	}
 	k := path[len(path)-1]
 	dp := nodeAt(dst, path[:len(path)-1])
 	if dp == nil {
-		return fmt.Errorf("brak rodzica %s po stronie docelowej", strings.Join(path[:len(path)-1], "/"))
+		return fmt.Errorf("missing parent %s on the target side", strings.Join(path[:len(path)-1], "/"))
 	}
 	dk := childKeys(dp)
 	idx := indexOf(dk, k)
@@ -227,7 +231,7 @@ func applyResolution(base, o, t *Doc, c Conflict, r Resolution) error {
 		return copyAt(t, o, c.Path)
 	case Both:
 		if !c.CanBoth {
-			return fmt.Errorf("\"oba\" dziala tylko dla klipow w Session View")
+			return fmt.Errorf("\"both\" only works for Session View clips")
 		}
 		theirClip := nodeAt(t, c.Path)
 		if err := copyAt(o, t, c.Path); err != nil {
@@ -248,9 +252,9 @@ func applyResolution(base, o, t *Doc, c Conflict, r Resolution) error {
 			nodeAt(t, p).Children = []*Node{theirClip}
 			return nil
 		}
-		return fmt.Errorf("brak wolnego slotu na tej sciezce - dodaj scene i scal ponownie")
+		return fmt.Errorf("no free slot on this track - add a scene and merge again")
 	}
-	return fmt.Errorf("nieznane rozstrzygniecie")
+	return fmt.Errorf("unknown resolution")
 }
 
 func emptySlot(d *Doc, valuePath []string) bool {

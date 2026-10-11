@@ -20,12 +20,12 @@ func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(s string) error { *m = append(*m, s); return nil }
 
 func main() {
-	out := flag.String("o", "", "plik wynikowy .als")
-	interactive := flag.Bool("i", false, "pytaj o kazdy konflikt (ours/theirs/both)")
+	out := flag.String("o", "", "output .als file")
+	interactive := flag.Bool("i", false, "ask about every conflict (ours/theirs/both)")
 	var rs multi
-	flag.Var(&rs, "r", "rozstrzygniecie konfliktu: ID=ours|theirs|both (mozna wiele razy)")
+	flag.Var(&rs, "r", "conflict resolution: ID=ours|theirs|both (repeatable)")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "uzycie: alsmerge base.als ours.als theirs.als -o merged.als [-i] [-r ID=ours]")
+		fmt.Fprintln(os.Stderr, "usage: alsmerge base.als ours.als theirs.als -o merged.als [-i] [-r ID=ours]")
 		flag.PrintDefaults()
 	}
 	// pozwalamy na flagi po argumentach pozycyjnych
@@ -79,19 +79,19 @@ func main() {
 		}
 	}
 	if len(r.Conflicts) > 0 {
-		fmt.Fprintf(os.Stderr, "%d konflikt(y) - plik %s NIE zostal zapisany\n\n", len(r.Conflicts), *out)
+		fmt.Fprintf(os.Stderr, "%d conflict(s) - %s was NOT written\n\n", len(r.Conflicts), *out)
 		for _, c := range r.Conflicts {
 			fmt.Fprint(os.Stderr, c)
 			opts := "ours|theirs"
 			if c.CanBoth {
 				opts += "|both"
 			}
-			fmt.Fprintf(os.Stderr, "  rozstrzygniecie: -r '%s=%s'\n\n", c.ID, opts)
+			fmt.Fprintf(os.Stderr, "  resolve with: -r '%s=%s'\n\n", c.ID, opts)
 		}
 		os.Exit(1)
 	}
 	if errs := als.Validate(r.Doc); len(errs) > 0 {
-		fmt.Fprintln(os.Stderr, "blad: wynik niespojny, nie zapisuje:")
+		fmt.Fprintln(os.Stderr, "error: the merged set is inconsistent, not writing it:")
 		for _, e := range errs {
 			fmt.Fprintln(os.Stderr, "  "+e)
 		}
@@ -104,18 +104,18 @@ func main() {
 	if err := r.Doc.WriteFile(*out); err != nil {
 		fail(err)
 	}
-	fmt.Println("scalono ->", *out)
+	fmt.Println("merged ->", *out)
 }
 
 func ask(in *bufio.Scanner, c als.Conflict) als.Resolution {
-	prompt := "  [o] zachowaj moje  [t] zachowaj ich"
+	prompt := "  [o] keep mine  [t] keep theirs"
 	if c.CanBoth {
-		prompt += "  [b] zachowaj oba (klip ich do wolnego slotu)"
+		prompt += "  [b] keep both (their clip to a free slot)"
 	}
 	for {
 		fmt.Fprint(os.Stderr, prompt+": ")
 		if !in.Scan() {
-			fail(fmt.Errorf("przerwano"))
+			fail(fmt.Errorf("cancelled"))
 		}
 		r, err := als.ParseResolution(in.Text())
 		if err == nil && (r != als.Both || c.CanBoth) {
@@ -125,6 +125,6 @@ func ask(in *bufio.Scanner, c als.Conflict) als.Resolution {
 }
 
 func fail(err error) {
-	fmt.Fprintln(os.Stderr, "blad:", err)
+	fmt.Fprintln(os.Stderr, "error:", err)
 	os.Exit(2)
 }

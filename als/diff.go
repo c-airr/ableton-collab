@@ -134,7 +134,7 @@ func (d *differ) walk(a, b *Node, depth int, path []string, segs []seg, unit []s
 		}
 	}
 	if !sameOrder(ak, bk, amap, bmap) {
-		d.add("reordered", path, segs, unit, unitLabel, "zmieniona kolejnosc elementow")
+		d.add("reordered", path, segs, unit, unitLabel, "elements reordered")
 	}
 }
 
@@ -172,7 +172,7 @@ func ownDiff(a, b *Node) string {
 	}
 	for _, bt := range b.Attrs {
 		if !seen[bt.Name] && !isNoiseAttr(b.Name, bt.Name) {
-			parts = append(parts, fmt.Sprintf("%s=%s dodany", bt.Name, bt.Value))
+			parts = append(parts, fmt.Sprintf("%s=%s added", bt.Name, bt.Value))
 		}
 	}
 	if a.Text != b.Text {
@@ -191,7 +191,7 @@ func summary(n *Node) string {
 	cnt := 0
 	n.Walk(func(*Node) { cnt++ })
 	if cnt > 1 {
-		parts = append(parts, fmt.Sprintf("(%d elementow)", cnt))
+		parts = append(parts, fmt.Sprintf("(%d elements)", cnt))
 	}
 	return strings.Join(parts, " ")
 }

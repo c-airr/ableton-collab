@@ -26,7 +26,7 @@ func Validate(d *Doc) []string {
 			return
 		}
 		if prev, dup := seen[id]; dup {
-			errs = append(errs, fmt.Sprintf("zduplikowane Id pointee %s (%s i %s)", id, prev, n.Name))
+			errs = append(errs, fmt.Sprintf("duplicate pointee Id %s (%s and %s)", id, prev, n.Name))
 		}
 		seen[id] = n.Name
 		if v, _ := strconv.Atoi(id); v > maxID {
@@ -40,7 +40,7 @@ func Validate(d *Doc) []string {
 	for _, t := range tracks(d) {
 		id, _ := t.Attr("Id")
 		if tids[id] {
-			errs = append(errs, "zduplikowane Id sciezki "+id)
+			errs = append(errs, "duplicate track Id "+id)
 		}
 		tids[id] = true
 	}

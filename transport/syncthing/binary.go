@@ -39,7 +39,7 @@ func platform() (string, error) {
 		p = "macos-universal"
 	}
 	if _, ok := sums[p]; !ok {
-		return "", fmt.Errorf("brak Syncthinga dla platformy %s/%s", runtime.GOOS, runtime.GOARCH)
+		return "", fmt.Errorf("no Syncthing build for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 	return p, nil
 }
@@ -77,15 +77,15 @@ func Ensure(dir string, log func(string)) (string, error) {
 	name := archiveName(plat)
 	url := "https://github.com/syncthing/syncthing/releases/download/" + Version + "/" + name
 	if log != nil {
-		log("pobieranie Syncthing " + Version + " (jednorazowo, ok. 12 MB)...")
+		log("downloading Syncthing " + Version + " (once, about 12 MB)...")
 	}
 	data, err := download(url)
 	if err != nil {
-		return "", fmt.Errorf("pobieranie Syncthinga: %w", err)
+		return "", fmt.Errorf("downloading Syncthing: %w", err)
 	}
 	sum := sha256.Sum256(data)
 	if got := hex.EncodeToString(sum[:]); got != sums[plat] {
-		return "", fmt.Errorf("pobrany %s ma zla sume sha256 (%s) - nie uruchamiam", name, got)
+		return "", fmt.Errorf("downloaded %s has a wrong sha256 (%s) - not running it", name, got)
 	}
 	bin, err := extract(name, exeName(), data)
 	if err != nil {
@@ -161,5 +161,5 @@ func extract(name, want string, data []byte) ([]byte, error) {
 			}
 		}
 	}
-	return nil, fmt.Errorf("%s: brak %s w archiwum", name, want)
+	return nil, fmt.Errorf("%s: no %s in the archive", name, want)
 }

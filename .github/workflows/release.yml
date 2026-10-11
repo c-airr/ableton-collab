@@ -45,7 +45,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'EOF'
-          ## Instalacja
+          ## Install
 
           **Windows** (PowerShell):
           ```powershell
@@ -57,10 +57,10 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/c-airr/ableton-collab/main/install.sh | sh
           ```
 
-          Potem w nowym terminalu: `abcollab`.
+          Then open a new terminal and type `abcollab`.
 
-          Instalator sprawdza sume sha256 paczki (`checksums.txt`). Przy pierwszym
-          uruchomieniu abcollab pobiera Syncthing (MPL-2.0) z jego oficjalnych wydan,
-          rowniez sprawdzajac sume sha256.
+          The installer checks the package's sha256 (`checksums.txt`). On first run
+          abcollab downloads Syncthing (MPL-2.0) from its official releases, also
+          checking the sha256.
           EOF
           gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md
