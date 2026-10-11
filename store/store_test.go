@@ -371,3 +371,36 @@ func TestValidIDRejectsPaths(t *testing.T) {
 		t.Error("ID urzadzenia odrzucone")
 	}
 }
+
+// Set w podfolderze (Live przy "Save As" do zwyklego folderu zaklada
+// "<nazwa> Project/"). U dolaczajacego podfolder jeszcze nie istnieje.
+func TestSetInSubfolder(t *testing.T) {
+	set := testdata(t, "base.als")
+	dir := filepath.Join(t.TempDir(), "sesja")
+	os.MkdirAll(filepath.Join(dir, "song Project"), 0o755)
+	os.WriteFile(filepath.Join(dir, "song Project", "song.als"), set, 0o644)
+	p, _, err := Init(dir, filepath.Join("song Project", "song.als"), NewDevice("Ja"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Meta.Set != "song Project/song.als" || p.SetName() != "song.als" {
+		t.Fatalf("set zapisany jako %q", p.Meta.Set)
+	}
+	gdir := filepath.Join(t.TempDir(), "gosc")
+	copyTree(t, filepath.Join(dir, Dir), filepath.Join(gdir, Dir))
+	g, err := Open(gdir, NewDevice("Kolega"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, err := g.Pull(nil); err != nil || len(r.FastForwarded) != 1 {
+		t.Fatalf("pull: %v %+v", err, r)
+	}
+	if got, _ := os.ReadFile(filepath.Join(gdir, "song Project", "song.als")); !bytes.Equal(got, set) {
+		t.Error("set goscia nie powstal w podfolderze")
+	}
+	for _, bad := range []string{"../x.als", `a\b.als`, "/x.als", "C:/x.als", ".abcollab/x.als", "a//b.als", "x.txt", "./x.als"} {
+		if validSet(bad) {
+			t.Errorf("przyjeto %q", bad)
+		}
+	}
+}

@@ -59,7 +59,7 @@ func (p *Project) readWorking() ([]byte, *als.Doc, error) {
 	}
 	doc, err := als.Read(bytes.NewReader(data))
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: nie da sie odczytac (Live jeszcze zapisuje?): %w", p.Meta.Set, err)
+		return nil, nil, fmt.Errorf("%s: nie da sie odczytac (Live jeszcze zapisuje?): %w", p.SetName(), err)
 	}
 	return data, doc, nil
 }
@@ -332,6 +332,10 @@ func (p *Project) checkout(v *Version) error {
 	if err != nil {
 		return err
 	}
+	// set moze lezec w podfolderze, ktory u nas jeszcze nie istnieje
+	if err := os.MkdirAll(filepath.Dir(p.WorkingPath()), 0o755); err != nil {
+		return err
+	}
 	if err := writeFileAtomic(p.WorkingPath(), data); err != nil {
 		return err
 	}
@@ -356,8 +360,8 @@ func (p *Project) backupForeignWorking(target *Version, r *PullResult) error {
 			return nil
 		}
 	}
-	name := strings.TrimSuffix(p.Meta.Set, filepath.Ext(p.Meta.Set))
-	r.Backup = filepath.Join(p.Dir, fmt.Sprintf("%s (kopia %s).als", name, p.now().Local().Format("2006-01-02 150405")))
+	name := strings.TrimSuffix(p.WorkingPath(), filepath.Ext(p.WorkingPath()))
+	r.Backup = filepath.Join(fmt.Sprintf("%s (kopia %s).als", name, p.now().Local().Format("2006-01-02 150405")))
 	return writeFileAtomic(r.Backup, data)
 }
 

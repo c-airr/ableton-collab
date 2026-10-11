@@ -8,6 +8,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -432,7 +433,7 @@ func (m Model) View() string {
 	w := max(40, m.width)
 	var b strings.Builder
 
-	head := sTitle.Render("ableton-collab") + sDim.Render("  ·  "+m.p.Meta.Set+"  ·  "+m.p.Me.Name)
+	head := sTitle.Render("ableton-collab") + sDim.Render("  ·  "+filepath.Base(m.p.Dir)+"  ·  "+m.p.Me.Name)
 	if m.busy != "" && m.busy != "odswiezanie" {
 		head += "  " + lipgloss.NewStyle().Foreground(cWarn).Render("⟳ "+m.busy+"...")
 	}

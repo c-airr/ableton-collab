@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -116,7 +117,7 @@ func (m Model) viewInvite(w int) string {
 			note = "Kod skopiowany do schowka - wklej go osobie, ktora chcesz zaprosic."
 		}
 		body := []string{
-			sBold.Render("Zaproszenie do " + m.p.Meta.Set),
+			sBold.Render("Zaproszenie do sesji " + filepath.Base(m.p.Dir)),
 			sDim.Render(note),
 			"",
 		}

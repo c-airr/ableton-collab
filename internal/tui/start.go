@@ -23,37 +23,43 @@ type Backend interface {
 	Folders() ([]syncthing.FolderConfig, error)
 	Join(inv syncthing.Invite, dir string) (Network, error)
 	Share(dir, folderID, label string) (Network, error)
-	// Create zaklada projekt z setu Live i udostepnia go; zwraca folder projektu.
-	Create(set string) (string, error)
+	// Create udostepnia folder sesji z setem (set wzgledem dir, "/"); gdy
+	// folder juz jest projektem, set jest pusty. Zwraca folder projektu.
+	Create(dir, set string) (string, error)
 	Rename(name string) error
 }
 
 type startStage int
 
 const (
-	stName startStage = iota // pierwsze uruchomienie: jak cie widza inni
-	stMenu                   // projekty + nowy + dolacz
-	stNew                    // wybor setu na nowy projekt
-	stCode                   // wklejanie kodu
-	stDir                    // gdzie zalozyc folder
-	stWait                   // czekanie na akceptacje i pobranie
+	stName    startStage = iota // pierwsze uruchomienie: jak cie widza inni
+	stMenu                      // projekty + nowy + dolacz
+	stBrowse                    // nowy projekt: wybor folderu sesji
+	stMkdir                     // nowy folder w przegladarce
+	stConfirm                   // folder duzy - na pewno?
+	stPickSet                   // kilka setow w folderze
+	stWaitSet                   // pusty folder - czekamy, az Live zapisze set
+	stCode                      // wklejanie kodu
+	stDir                       // gdzie zalozyc folder
+	stWait                      // czekanie na akceptacje i pobranie
 )
 
 // Start: menu glowne. Po zakonczeniu Dir() to folder projektu do otwarcia
 // ("" - wyjscie), a Created() mowi, czy projekt wlasnie powstal (wtedy
 // od razu pokazujemy zaproszenie).
 type Start struct {
-	be      Backend
-	me      store.Device
-	baseDir string   // domyslne miejsce na projekty, do ktorych dolaczamy
-	roots   []string // gdzie szukac setow Live na nowy projekt
-	here    string   // projekt w biezacym folderze (jesli jest)
+	be         Backend
+	me         store.Device
+	baseDir    string // domyslne miejsce na projekty, do ktorych dolaczamy
+	browseFrom string // gdzie zaczyna przegladarka folderow
+	here       string // projekt w biezacym folderze (jesli jest)
 
 	stage    startStage
 	projects []syncthing.FolderConfig
-	sets     []string
 	cur      int
 	input    string
+	br       browser
+	info     FolderInfo
 	inv      syncthing.Invite
 	err      error
 	waitMsg  string
@@ -62,26 +68,28 @@ type Start struct {
 	done     bool
 	created  bool
 	width    int
+	height   int
 	pollWait time.Duration
 }
 
 type StartOptions struct {
-	Me      store.Device
-	AskName bool     // pierwsze uruchomienie
-	BaseDir string   // folder na projekty, do ktorych sie dolacza
-	Roots   []string // gdzie szukac setow Live
-	Here    string   // projekt w biezacym folderze
-	Code    string   // kod z `abcollab join <kod>`
+	Me         store.Device
+	AskName    bool   // pierwsze uruchomienie
+	BaseDir    string // folder na projekty, do ktorych sie dolacza
+	BrowseFrom string // start przegladarki folderow
+	Here       string // projekt w biezacym folderze
+	Code       string // kod z `abcollab join <kod>`
 }
 
 func NewStart(be Backend, o StartOptions) Start {
-	s := Start{be: be, me: o.Me, baseDir: o.BaseDir, roots: o.Roots, here: o.Here, width: 100, pollWait: time.Second, stage: stMenu}
+	s := Start{be: be, me: o.Me, baseDir: o.BaseDir, browseFrom: o.BrowseFrom, here: o.Here,
+		width: 100, height: 30, pollWait: time.Second, stage: stMenu}
 	switch {
 	case o.Code != "":
 		// kod z `abcollab join <kod>`: poprawny - od razu wybor folderu
 		s.stage, s.input = stCode, o.Code
 		if inv, err := syncthing.ParseInvite(o.Code); err == nil {
-			s.inv, s.stage, s.input = inv, stDir, filepath.Join(o.BaseDir, inv.Name+" Project")
+			s.inv, s.stage, s.input = inv, stDir, filepath.Join(o.BaseDir, inv.Name)
 		} else {
 			s.err = err
 		}
@@ -107,8 +115,6 @@ type projectsMsg struct {
 	err  error
 }
 
-type setsMsg []string
-
 type joinedMsg struct {
 	share Network
 	err   error
@@ -117,6 +123,12 @@ type joinedMsg struct {
 type createdMsg struct {
 	dir string
 	err error
+}
+
+type inspectMsg struct {
+	info FolderInfo
+	err  error
+	poll bool // z czekania na set
 }
 
 type waitMsg struct {
@@ -151,6 +163,21 @@ func (s Start) loadProjects() tea.Cmd {
 	}
 }
 
+func inspect(dir string, poll bool) tea.Cmd {
+	return func() tea.Msg {
+		info, err := InspectFolder(dir)
+		return inspectMsg{info, err, poll}
+	}
+}
+
+func (s Start) create(set string) tea.Cmd {
+	be, dir := s.be, s.info.Dir
+	return func() tea.Msg {
+		d, err := be.Create(dir, set)
+		return createdMsg{d, err}
+	}
+}
+
 // menu: projekty, potem stale pozycje.
 const (
 	miNew = iota
@@ -164,14 +191,14 @@ func (s Start) menuLen() int { return len(s.projects) + menuFixed }
 func (s Start) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.width = msg.Width
+		s.width, s.height = msg.Width, msg.Height
 	case projectsMsg:
 		s.projects = msg.list
 		if msg.err != nil {
 			s.err = msg.err
 		}
-	case setsMsg:
-		s.sets = msg
+	case inspectMsg:
+		return s.inspected(msg)
 	case joinedMsg:
 		if msg.err != nil {
 			s.stage, s.err = stDir, msg.err
@@ -187,6 +214,9 @@ func (s Start) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s.dir, s.done, s.created = msg.dir, true, true
 		return s, tea.Quit
 	case waitMsg:
+		if s.stage != stWait {
+			return s, nil
+		}
 		if msg.ready {
 			s.done = true
 			return s, tea.Quit
@@ -197,6 +227,50 @@ func (s Start) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return s.key(msg)
 	}
 	return s, nil
+}
+
+// inspected: wynik sprawdzenia folderu sesji - co dalej.
+func (s Start) inspected(msg inspectMsg) (tea.Model, tea.Cmd) {
+	if msg.poll && s.stage != stWaitSet {
+		return s, nil // uzytkownik juz wyszedl z czekania
+	}
+	if msg.err != nil {
+		s.stage, s.err = stBrowse, msg.err
+		return s, nil
+	}
+	s.info, s.err = msg.info, nil
+	if msg.poll {
+		return s.afterConfirm()
+	}
+	if s.info.Project {
+		return s, s.create("")
+	}
+	if s.info.Big() {
+		s.stage = stConfirm
+		return s, nil
+	}
+	return s.afterConfirm()
+}
+
+// afterConfirm: folder zaakceptowany - zostaje wybrac set albo poczekac na niego.
+func (s Start) afterConfirm() (tea.Model, tea.Cmd) {
+	var ready []string
+	for _, set := range s.info.Sets {
+		if setReady(s.info.Dir, set) {
+			ready = append(ready, set)
+		}
+	}
+	switch {
+	case len(ready) == 1:
+		s.info.Sets = ready
+		return s, s.create(ready[0])
+	case len(ready) > 1:
+		s.info.Sets, s.stage, s.cur = ready, stPickSet, 0
+		return s, nil
+	}
+	s.stage = stWaitSet
+	dir := s.info.Dir
+	return s, tea.Tick(2*s.pollWait, func(time.Time) tea.Msg { return inspect(dir, true)() })
 }
 
 func (s Start) toMenu() Start {
@@ -210,11 +284,13 @@ func (s Start) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if k.String() == "esc" {
 		switch s.stage {
-		case stMenu, stName:
-			if s.stage == stName {
-				return s.toMenu(), nil
-			}
+		case stMenu:
 			return s, tea.Quit
+		case stName:
+			return s.toMenu(), nil
+		case stMkdir, stConfirm, stPickSet, stWaitSet:
+			s.stage, s.err = stBrowse, nil
+			return s, nil
 		case stDir:
 			s.stage, s.input, s.err = stCode, s.inv.Code(), nil
 			return s, nil
@@ -225,42 +301,35 @@ func (s Start) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch s.stage {
 	case stMenu:
+		return s.keyMenu(k)
+	case stBrowse:
+		return s.keyBrowse(k)
+	case stConfirm:
 		switch k.String() {
-		case "q":
-			return s, tea.Quit
+		case "t", "y", "enter":
+			return s.afterConfirm()
+		case "n":
+			s.stage = stBrowse
+		}
+		return s, nil
+	case stPickSet:
+		switch k.String() {
 		case "up", "k":
 			if s.cur > 0 {
 				s.cur--
 			}
-		case "down", "j", "tab":
-			if s.cur < s.menuLen()-1 {
+		case "down", "j":
+			if s.cur < len(s.info.Sets)-1 {
 				s.cur++
 			}
-		case "n":
-			return s.choose(len(s.projects) + miNew)
-		case "d":
-			return s.choose(len(s.projects) + miJoin)
 		case "enter":
-			return s.choose(s.cur)
+			return s, s.create(s.info.Sets[s.cur])
 		}
 		return s, nil
-	case stNew:
-		switch k.Type {
-		case tea.KeyUp:
-			if s.cur > 0 {
-				s.cur--
-			}
-			return s, nil
-		case tea.KeyDown:
-			if s.cur < len(s.sets)-1 {
-				s.cur++
-			}
-			return s, nil
-		}
-	}
-	if s.stage == stWait {
+	case stWait, stWaitSet:
 		return s, nil
 	}
+	// pola tekstowe: nazwa, nowy folder, kod, folder na projekt
 	switch k.Type {
 	case tea.KeyEnter:
 		return s.submit()
@@ -278,6 +347,58 @@ func (s Start) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return s, nil
 }
 
+func (s Start) keyMenu(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "q":
+		return s, tea.Quit
+	case "up", "k":
+		if s.cur > 0 {
+			s.cur--
+		}
+	case "down", "j", "tab":
+		if s.cur < s.menuLen()-1 {
+			s.cur++
+		}
+	case "n":
+		return s.choose(len(s.projects) + miNew)
+	case "d":
+		return s.choose(len(s.projects) + miJoin)
+	case "enter":
+		return s.choose(s.cur)
+	}
+	return s, nil
+}
+
+func (s Start) keyBrowse(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "up", "k":
+		if s.br.cur > 0 {
+			s.br.cur--
+		}
+	case "down", "j":
+		if s.br.cur < len(s.br.dirs)-1 {
+			s.br.cur++
+		}
+	case "enter", "right", "l":
+		s.br.enter()
+		s.err = nil
+	case "left", "h", "backspace":
+		s.br.up()
+		s.err = nil
+	case "s", " ":
+		if s.br.path == "" {
+			return s, nil
+		}
+		s.err = nil
+		return s, inspect(s.br.path, false)
+	case "+":
+		if s.br.path != "" {
+			s.stage, s.input, s.err = stMkdir, "", nil
+		}
+	}
+	return s, nil
+}
+
 func (s Start) choose(i int) (tea.Model, tea.Cmd) {
 	s.err = nil
 	if i < len(s.projects) {
@@ -285,9 +406,7 @@ func (s Start) choose(i int) (tea.Model, tea.Cmd) {
 	}
 	switch i - len(s.projects) {
 	case miNew:
-		s.stage, s.input, s.cur, s.sets = stNew, "", 0, nil
-		roots := s.roots
-		return s, func() tea.Msg { return setsMsg(FindSets(roots, 15)) }
+		s.stage, s.br = stBrowse, newBrowser(s.browseFrom)
 	case miJoin:
 		s.stage, s.input = stCode, ""
 	case miQuit:
@@ -328,19 +447,20 @@ func (s Start) submit() (tea.Model, tea.Cmd) {
 		}
 		s.me.Name = name
 		return s.toMenu(), nil
-	case stNew:
-		set := cleanPath(s.input)
-		if set == "" && s.cur < len(s.sets) {
-			set = s.sets[s.cur]
-		}
-		if set == "" {
+	case stMkdir:
+		name := strings.TrimSpace(s.input)
+		if name == "" || strings.ContainsAny(name, `<>:"/\|?*`) || name == "." || name == ".." {
+			s.err = errors.New("niepoprawna nazwa folderu")
 			return s, nil
 		}
-		be := s.be
-		return s, func() tea.Msg {
-			dir, err := be.Create(set)
-			return createdMsg{dir, err}
+		dir := filepath.Join(s.br.path, name)
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			s.err = err
+			return s, nil
 		}
+		s.br.path = dir
+		s.br.load()
+		s.stage, s.err = stBrowse, nil
 	case stCode:
 		inv, err := syncthing.ParseInvite(s.input)
 		if err != nil {
@@ -348,7 +468,7 @@ func (s Start) submit() (tea.Model, tea.Cmd) {
 			return s, nil
 		}
 		s.inv, s.err, s.stage = inv, nil, stDir
-		s.input = filepath.Join(s.baseDir, inv.Name+" Project")
+		s.input = filepath.Join(s.baseDir, inv.Name)
 	case stDir:
 		dir := cleanPath(s.input)
 		if dir == "" {
@@ -408,60 +528,6 @@ func (s Start) poll() tea.Cmd {
 	}
 }
 
-// FindSets szuka setow Live (.als w folderze projektu Live, czyli obok
-// "Ableton Project Info"), ktore nie sa jeszcze projektami abcollab.
-// Najnowsze pierwsze. Plytko i z limitem - User Library bywa ogromna.
-func FindSets(roots []string, limit int) []string {
-	type found struct {
-		path string
-		mod  time.Time
-	}
-	var out []found
-	seen := map[string]bool{}
-	budget := 20000
-	var walk func(dir string, depth int)
-	walk = func(dir string, depth int) {
-		ents, err := os.ReadDir(dir)
-		if err != nil || budget <= 0 {
-			return
-		}
-		budget -= len(ents)
-		isProject, isOurs := false, false
-		for _, e := range ents {
-			isProject = isProject || e.IsDir() && e.Name() == "Ableton Project Info"
-			isOurs = isOurs || e.Name() == store.Dir
-		}
-		for _, e := range ents {
-			name := e.Name()
-			if e.IsDir() {
-				if depth < 4 && name != "Backup" && name != "User Library" && name != "Factory Packs" && name != "Samples" && !strings.HasPrefix(name, ".") {
-					walk(filepath.Join(dir, name), depth+1)
-				}
-				continue
-			}
-			if isProject && !isOurs && strings.EqualFold(filepath.Ext(name), ".als") {
-				p := filepath.Join(dir, name)
-				if fi, err := e.Info(); err == nil && !seen[p] {
-					seen[p] = true
-					out = append(out, found{p, fi.ModTime()})
-				}
-			}
-		}
-	}
-	for _, r := range roots {
-		walk(r, 0)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].mod.After(out[j].mod) })
-	var paths []string
-	for i, f := range out {
-		if i == limit {
-			break
-		}
-		paths = append(paths, f.path)
-	}
-	return paths
-}
-
 // --- widok -----------------------------------------------------------------------------
 
 func (s Start) View() string {
@@ -483,25 +549,32 @@ func (s Start) View() string {
 			b.WriteString("\n")
 		}
 		n := len(s.projects)
-		b.WriteString(cursor(s.cur == n+miNew) + sKey.Render("n") + "  Nowy projekt" + sDim.Render(" - udostepnij swoj set Live i zapros innych") + "\n")
+		b.WriteString(cursor(s.cur == n+miNew) + sKey.Render("n") + "  Nowy projekt" + sDim.Render(" - wybierz folder sesji i zapros innych") + "\n")
 		b.WriteString(cursor(s.cur == n+miJoin) + sKey.Render("d") + "  Dolacz do projektu" + sDim.Render(" - masz kod zaproszenia") + "\n")
 		b.WriteString(cursor(s.cur == n+miQuit) + sKey.Render("q") + "  Wyjscie\n")
 		b.WriteString("\n" + keys("↑↓", "wybor", "enter", "otworz"))
-	case stNew:
-		b.WriteString(sBold.Render("Nowy projekt") + "\n")
-		b.WriteString(sDim.Render("Wybierz set (projekt zapisany w Live) albo wpisz / przeciagnij sciezke do pliku .als.") + "\n")
-		b.WriteString(sDim.Render("Udostepniany jest caly folder projektu Live (sample w nim tez).") + "\n\n")
-		if s.sets == nil {
-			b.WriteString(sDim.Render("  szukanie setow...") + "\n")
-		} else if len(s.sets) == 0 {
-			b.WriteString(sDim.Render("  nie znalazlem setow w folderze Ableton - wpisz sciezke") + "\n")
+	case stBrowse, stMkdir:
+		b.WriteString(s.viewBrowser(w))
+	case stConfirm:
+		b.WriteString(sBold.Render("Duzy folder") + "\n\n")
+		b.WriteString(s.info.Dir + "\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(cWarn).Render("  "+humanCount(s.info)) + "\n\n")
+		b.WriteString("Wszystko z tego folderu poleci do kazdego uczestnika sesji. Na pewno?\n\n")
+		b.WriteString(keys("t", "tak, udostepnij", "n", "wybierz inny"))
+	case stPickSet:
+		b.WriteString(sBold.Render("Ktory set jest projektem tej sesji?") + "\n")
+		b.WriteString(sDim.Render("Pozostale sety zostana w folderze, ale nie beda scalane.") + "\n\n")
+		for i, set := range s.info.Sets {
+			b.WriteString(cursor(i == s.cur) + set + "\n")
 		}
-		for i, p := range s.sets {
-			on := i == s.cur && strings.TrimSpace(s.input) == ""
-			b.WriteString(cursor(on) + fmt.Sprintf("%-28s %s", trunc(filepath.Base(p), 28), sDim.Render(trunc(filepath.Dir(p), w-36))) + "\n")
-		}
-		b.WriteString("\n" + inputBox(s.input, w) + "\n")
-		b.WriteString(keys("↑↓", "wybor", "enter", "udostepnij", "esc", "menu"))
+		b.WriteString("\n" + keys("↑↓", "wybor", "enter", "udostepnij", "esc", "wstecz"))
+	case stWaitSet:
+		b.WriteString(sBold.Render("Zapisz projekt z Live do tego folderu") + "\n\n")
+		b.WriteString("  " + lipgloss.NewStyle().Bold(true).Foreground(cAccent).Render(s.info.Dir) + "\n\n")
+		b.WriteString("W Live: " + sBold.Render("File > Save Live Set As...") + " i wybierz ten folder.\n")
+		b.WriteString(sDim.Render("Live moze zalozyc w nim podfolder \"<nazwa> Project\" - to w porzadku.") + "\n\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(cWarn).Render("⟳ czekam na plik .als...") + "\n\n")
+		b.WriteString(keys("esc", "wstecz"))
 	case stCode:
 		b.WriteString(sBold.Render("Dolacz do projektu") + "\n")
 		b.WriteString(sDim.Render("Wklej kod zaproszenia od osoby, ktora zaprasza (zaczyna sie od ABC1).") + "\n\n")
@@ -509,7 +582,7 @@ func (s Start) View() string {
 		b.WriteString(keys("enter", "dalej", "ctrl+u", "wyczysc", "esc", "menu"))
 	case stDir:
 		b.WriteString(sBold.Render("Projekt "+s.inv.Name) + sDim.Render(" od "+s.inv.Host) + "\n")
-		b.WriteString(sDim.Render("Gdzie zapisac projekt? Folder musi byc nowy albo pusty.") + "\n\n")
+		b.WriteString(sDim.Render("Gdzie zapisac folder sesji? Musi byc nowy albo pusty.") + "\n\n")
 		b.WriteString(inputBox(s.input, w) + "\n")
 		b.WriteString(keys("enter", "dolacz", "esc", "wstecz"))
 	case stWait:
@@ -528,6 +601,44 @@ func (s Start) View() string {
 		b.WriteString("\n\n" + sWarnBox.Width(w-4).Render(s.err.Error()))
 	}
 	return b.String() + "\n"
+}
+
+func (s Start) viewBrowser(w int) string {
+	var b strings.Builder
+	br := s.br
+	b.WriteString(sBold.Render("Nowy projekt - wybierz folder sesji") + "\n")
+	b.WriteString(sDim.Render("Caly ten folder (set, sample, nagrania, .mp3...) bedzie wspolny dla wszystkich w sesji.") + "\n\n")
+	where := br.path
+	if where == "" {
+		where = "Dyski"
+	}
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(cAccent).Render(trunc(where, w-4)) + "\n")
+	if br.err != nil {
+		b.WriteString(lipgloss.NewStyle().Foreground(cBad).Render("  "+br.err.Error()) + "\n")
+	}
+	listH := max(5, s.height-16)
+	start := max(0, min(br.cur-listH/2, len(br.dirs)-listH))
+	if len(br.dirs) == 0 && br.err == nil {
+		b.WriteString(sDim.Render("  (brak podfolderow)") + "\n")
+	}
+	for i := start; i < min(len(br.dirs), start+listH); i++ {
+		name := br.dirs[i]
+		if br.path != "" {
+			name += string(os.PathSeparator)
+		}
+		b.WriteString(cursor(i == br.cur) + trunc(name, w-6) + "\n")
+	}
+	if br.path != "" && br.files > 0 {
+		b.WriteString(sDim.Render(fmt.Sprintf("  + %d plik(ow) w tym folderze", br.files)) + "\n")
+	}
+	if s.stage == stMkdir {
+		b.WriteString("\n" + sBold.Render("Nazwa nowego folderu:") + "\n")
+		b.WriteString(inputBox(s.input, w) + "\n")
+		b.WriteString(keys("enter", "zaloz", "esc", "anuluj"))
+		return b.String()
+	}
+	b.WriteString("\n" + keys("↑↓", "wybor", "enter/→", "wejdz", "←", "wyzej", "s", "wybierz ten folder", "+", "nowy folder", "esc", "menu"))
+	return b.String()
 }
 
 func cursor(on bool) string {

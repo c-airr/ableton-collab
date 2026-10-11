@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/c-airr/ableton-collab/store"
 	"github.com/c-airr/ableton-collab/transport/syncthing"
@@ -33,12 +32,12 @@ func (f *fakeBackend) Share(dir, id, label string) (Network, error) {
 	return &fakeNet{}, nil
 }
 func (f *fakeBackend) Rename(name string) error { f.renamed = name; return nil }
-func (f *fakeBackend) Create(set string) (string, error) {
+func (f *fakeBackend) Create(dir, set string) (string, error) {
 	if f.failWith != nil {
 		return "", f.failWith
 	}
 	f.created = set
-	return filepath.Dir(set), nil
+	return dir, nil
 }
 func (f *fakeBackend) Join(inv syncthing.Invite, dir string) (Network, error) {
 	if ents, _ := os.ReadDir(dir); len(ents) > 0 {
@@ -60,6 +59,8 @@ func press(t *testing.T, s Start, k string) Start {
 		msg = tea.KeyMsg{Type: tea.KeyEsc}
 	case "down":
 		msg = tea.KeyMsg{Type: tea.KeyDown}
+	case "left":
+		msg = tea.KeyMsg{Type: tea.KeyLeft}
 	case "ctrl+u":
 		msg = tea.KeyMsg{Type: tea.KeyCtrlU}
 	default:
@@ -118,7 +119,7 @@ func TestMenuFirstRunAndJoin(t *testing.T) {
 	s = press(t, s, "ctrl+u")
 	s = press(t, s, code[:30]+"\n"+code[30:])
 	s = press(t, s, "enter")
-	want := filepath.Join(base, "song Project")
+	want := filepath.Join(base, "song")
 	if s.stage != stDir || s.input != want {
 		t.Fatalf("etap %d, folder %q", s.stage, s.input)
 	}
@@ -146,74 +147,6 @@ func TestJoinNonEmptyDir(t *testing.T) {
 	s = press(t, s, "enter")
 	if s.Dir() != "" || s.stage != stDir || s.err == nil || !strings.Contains(s.View(), "nie jest pusty") {
 		t.Fatalf("dolaczono do niepustego folderu:\n%s", s.View())
-	}
-}
-
-// liveProject: folder projektu Live z setem (jak zapisuje go Live).
-func liveProject(t *testing.T, root, name string, mod time.Time) string {
-	dir := filepath.Join(root, name+" Project")
-	os.MkdirAll(filepath.Join(dir, "Ableton Project Info"), 0o755)
-	set := filepath.Join(dir, name+".als")
-	os.WriteFile(set, tinySet(), 0o644)
-	os.Chtimes(set, mod, mod)
-	return set
-}
-
-func TestFindSets(t *testing.T) {
-	root := t.TempDir()
-	now := time.Now()
-	old := liveProject(t, filepath.Join(root, "saves"), "stary", now.Add(-time.Hour))
-	fresh := liveProject(t, filepath.Join(root, "saves"), "nowy", now)
-	// juz projekt abcollab - pomijany
-	shared := liveProject(t, root, "wspolny", now)
-	os.MkdirAll(filepath.Join(filepath.Dir(shared), store.Dir), 0o755)
-	// luzny set bez folderu projektu i kopie zapasowe - pomijane
-	os.WriteFile(filepath.Join(root, "luzny.als"), tinySet(), 0o644)
-	bak := filepath.Join(filepath.Dir(fresh), "Backup")
-	os.MkdirAll(bak, 0o755)
-	os.WriteFile(filepath.Join(bak, "nowy [2026-10-11].als"), tinySet(), 0o644)
-
-	got := FindSets([]string{root, filepath.Join(root, "nie-ma")}, 10)
-	if len(got) != 2 || got[0] != fresh || got[1] != old {
-		t.Fatalf("FindSets: %v", got)
-	}
-}
-
-func TestMenuNewProject(t *testing.T) {
-	root := t.TempDir()
-	set := liveProject(t, root, "bit", time.Now())
-	be := &fakeBackend{t: t, folders: []syncthing.FolderConfig{{ID: "abcollab-x", Label: "stary", Path: root}}}
-	s := started(t, be, StartOptions{Me: store.NewDevice("Ja"), Roots: []string{root}})
-	if !strings.Contains(s.View(), "Twoje projekty") || !strings.Contains(s.View(), "stary") {
-		t.Fatalf("brak listy projektow:\n%s", s.View())
-	}
-	s = press(t, s, "n")
-	v := s.View()
-	dump(t, v)
-	if s.stage != stNew || !strings.Contains(v, "bit.als") {
-		t.Fatalf("wybor setu:\n%s", v)
-	}
-	be.failWith = errors.New("nie lezy w folderze projektu Live")
-	s = press(t, s, "enter")
-	if s.err == nil || s.Dir() != "" {
-		t.Fatal("blad zakladania nie pokazany")
-	}
-	be.failWith = nil
-	s = press(t, s, "enter")
-	if be.created != set || s.Dir() != filepath.Dir(set) || !s.Created() {
-		t.Fatalf("created=%q dir=%q", be.created, s.Dir())
-	}
-}
-
-func TestMenuNewProjectTypedPath(t *testing.T) {
-	be := &fakeBackend{t: t}
-	s := started(t, be, StartOptions{Me: store.NewDevice("Ja")})
-	s = press(t, s, "n")
-	s = drain(t, s, func() tea.Msg { return setsMsg(nil) })
-	s = press(t, s, `& 'C:\Muzyka\x Project\x.als'`) // przeciagniety plik w PowerShellu
-	s = press(t, s, "enter")
-	if be.created != `C:\Muzyka\x Project\x.als` {
-		t.Fatalf("sciezka: %q", be.created)
 	}
 }
 

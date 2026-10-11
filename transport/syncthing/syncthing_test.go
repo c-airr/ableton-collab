@@ -169,11 +169,21 @@ func TestPairing(t *testing.T) {
 	if hl, _ := hshare.Lobby(); len(hl.Requests) != 0 {
 		t.Errorf("odrzucony wrocil: %+v", hl.Requests)
 	}
-	// .als nie jest synchronizowany - kazdy ma wlasny plik roboczy
+	// zaden .als nie jest synchronizowany wprost (tez w podfolderach) - kazdy
+	// ma wlasny plik roboczy; reszta folderu sesji (sample) idzie normalnie
 	os.WriteFile(filepath.Join(guestDir, "song.als"), []byte("lokalna zmiana"), 0o644)
-	time.Sleep(3 * time.Second)
+	os.MkdirAll(filepath.Join(guestDir, "inny Project", "Samples"), 0o755)
+	os.WriteFile(filepath.Join(guestDir, "inny Project", "inny.als"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(guestDir, "inny Project", "Samples", "bit.mp3"), []byte("mp3"), 0o644)
+	waitFor(t, "sampel goscia u hosta", func() bool {
+		got, _ := os.ReadFile(filepath.Join(hostDir, "inny Project", "Samples", "bit.mp3"))
+		return string(got) == "mp3"
+	})
 	if now, _ := os.ReadFile(filepath.Join(hostDir, "song.als")); !bytes.Equal(now, set) {
 		t.Error("plik roboczy goscia nadpisal set hosta")
+	}
+	if _, err := os.Stat(filepath.Join(hostDir, "inny Project", "inny.als")); err == nil {
+		t.Error("set z podfolderu przeszedl przez Syncthinga")
 	}
 }
 

@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"github.com/c-airr/ableton-collab/als"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -48,8 +49,11 @@ type Device struct {
 }
 
 type Meta struct {
-	ID      string    `json:"id"`
-	Set     string    `json:"set"` // nazwa pliku .als w folderze projektu
+	ID string `json:"id"`
+	// Set: sciezka seta (.als) wzgledem folderu projektu, z "/" niezaleznie od
+	// systemu. Moze byc w podfolderze - Live przy "Save As" do zwyklego
+	// folderu zaklada w nim "<nazwa> Project/".
+	Set     string    `json:"set"`
 	Created time.Time `json:"created"`
 }
 
@@ -86,7 +90,24 @@ func (p *Project) root() string            { return filepath.Join(p.Dir, Dir) }
 func (p *Project) devDir(id string) string { return filepath.Join(p.root(), "devices", id) }
 
 // WorkingPath: plik .als, na ktorym pracuje Live.
-func (p *Project) WorkingPath() string { return filepath.Join(p.Dir, p.Meta.Set) }
+func (p *Project) WorkingPath() string { return filepath.Join(p.Dir, filepath.FromSlash(p.Meta.Set)) }
+
+// SetName: nazwa pliku seta (bez podfolderu).
+func (p *Project) SetName() string { return path.Base(p.Meta.Set) }
+
+// validSet: wzgledna sciezka .als wewnatrz projektu. Przychodzi tez od innych
+// (project.json), wiec bez "..", sciezek absolutnych i "\" (przenosnosc).
+func validSet(set string) bool {
+	if set == "" || strings.ContainsAny(set, "\\:") || path.IsAbs(set) || !strings.EqualFold(path.Ext(set), ".als") {
+		return false
+	}
+	for _, part := range strings.Split(set, "/") {
+		if part == "" || part == "." || part == ".." || part == Dir {
+			return false
+		}
+	}
+	return true
+}
 
 func newID(n int) string {
 	b := make([]byte, n)
@@ -108,10 +129,11 @@ func Init(dir, set string, me Device) (*Project, *Version, error) {
 	if _, err := os.Stat(filepath.Join(dir, Dir, "project.json")); err == nil {
 		return nil, nil, fmt.Errorf("%s jest juz projektem abcollab", dir)
 	}
-	if filepath.Base(set) != set || !strings.EqualFold(filepath.Ext(set), ".als") {
-		return nil, nil, fmt.Errorf("set musi byc nazwa pliku .als w folderze projektu, jest %q", set)
+	set = filepath.ToSlash(set)
+	if !validSet(set) {
+		return nil, nil, fmt.Errorf("set musi byc plikiem .als wewnatrz folderu projektu, jest %q", set)
 	}
-	if _, err := os.Stat(filepath.Join(dir, set)); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(set))); err != nil {
 		return nil, nil, err
 	}
 	p := &Project{Dir: dir, Me: me, Meta: Meta{ID: newID(10), Set: set, Created: time.Now().UTC()}}
@@ -141,7 +163,7 @@ func Open(dir string, me Device) (*Project, error) {
 		}
 		return nil, err
 	}
-	if p.Meta.Set == "" || filepath.Base(p.Meta.Set) != p.Meta.Set {
+	if !validSet(p.Meta.Set) {
 		return nil, fmt.Errorf("project.json: niepoprawna nazwa seta %q", p.Meta.Set)
 	}
 	return p, nil

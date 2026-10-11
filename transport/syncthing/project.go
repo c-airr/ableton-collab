@@ -99,14 +99,18 @@ func cleanName(s, def string) string {
 
 // --- folder projektu -----------------------------------------------------------------
 
-// ignores: plik roboczy Live'a NIE jest synchronizowany - kazdy ma swoj, a
-// zmiany ida jako wersje w .abcollab/ i sa scalane przez abcollab. Inaczej
-// Syncthing nadpisywalby sobie nawzajem sety i tworzyl pliki sync-conflict.
+// ignores: caly folder sesji jest synchronizowany (sample, nagrania, mp3...),
+// ale zadne sety (.als) - kazdy ma swoj plik roboczy, a zmiany ida jako
+// wersje w .abcollab/ i sa scalane przez abcollab. Inaczej Syncthing
+// nadpisywalby sobie nawzajem sety i tworzyl pliki sync-conflict.
+// Kolejnosc ma znaczenie (wygrywa pierwszy pasujacy wzorzec): wersje w
+// .abcollab/ tez maja koncowke .als, wiec sa wlaczone przed "*.als".
 const ignores = `// abcollab: nie edytuj - plik nadpisywany przy kazdym starcie
-/*.als
-/Backup
-/Ableton Project Info
 *.tmp
+!/.abcollab
+*.als
+Backup
+Ableton Project Info
 `
 
 func writeIgnores(dir string) error {

@@ -225,7 +225,7 @@ func startNode(d *store.Device) (*syncthing.Node, error) {
 
 // share udostepnia projekt w Syncthingu i oglasza moje ID transportu w projekcie.
 func share(n *syncthing.Node, p *store.Project) (*syncthing.Project, error) {
-	sh, err := n.Share(p.Dir, syncthing.FolderID(p.Meta.ID), strings.TrimSuffix(p.Meta.Set, filepath.Ext(p.Meta.Set)))
+	sh, err := n.Share(p.Dir, syncthing.FolderID(p.Meta.ID), filepath.Base(p.Dir))
 	if err != nil {
 		return nil, err
 	}
@@ -242,23 +242,18 @@ func defaultProjectsDir() string {
 	return filepath.Join(home, "Documents", "Ableton", "abcollab")
 }
 
-// setRoots: gdzie szukac setow Live na nowy projekt (Live na Windowsie/macOS
-// i Live pod Wine na Linuksie).
-func setRoots() []string {
+// browseFrom: start przegladarki folderow przy zakladaniu projektu.
+func browseFrom() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil
+		return "."
 	}
-	roots := []string{
-		filepath.Join(home, "Documents", "Ableton"),
-		filepath.Join(home, "OneDrive", "Documents", "Ableton"),
-		filepath.Join(home, "Music", "Ableton"),
+	for _, d := range []string{filepath.Join(home, "Documents", "Ableton"), filepath.Join(home, "Documents")} {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			return d
+		}
 	}
-	for _, pat := range []string{".wine*/drive_c/users/*/Documents/Ableton", "Games/*/drive_c/users/*/Documents/Ableton"} {
-		m, _ := filepath.Glob(filepath.Join(home, pat))
-		roots = append(roots, m...)
-	}
-	return roots
+	return home
 }
 
 // runTUI: bez -C menu (projekty, nowy, dolacz); z -C od razu projekt.
@@ -292,7 +287,7 @@ func runTUI(dir string, direct, offline bool, code string) error {
 	}
 	be := &backend{Node: node, me: &d}
 	res, err := tea.NewProgram(tui.NewStart(be, tui.StartOptions{
-		Me: d, AskName: isNew, BaseDir: defaultProjectsDir(), Roots: setRoots(), Here: here, Code: code,
+		Me: d, AskName: isNew, BaseDir: defaultProjectsDir(), BrowseFrom: browseFrom(), Here: here, Code: code,
 	}), tea.WithAltScreen()).Run()
 	if err != nil {
 		return err
@@ -342,32 +337,20 @@ func (b *backend) Rename(name string) error {
 	return b.Node.PatchDevice(b.Node.ID, map[string]any{"name": name})
 }
 
-// Create zaklada projekt z setu Live. Udostepniany jest caly folder setu, wiec
-// wymagamy prawdziwego folderu projektu Live (z "Ableton Project Info") -
-// set lezacy luzem np. w Dokumentach wyslalby cudze pliki.
-func (b *backend) Create(set string) (string, error) {
-	abs, err := filepath.Abs(set)
-	if err != nil {
-		return "", err
-	}
-	if !strings.EqualFold(filepath.Ext(abs), ".als") {
-		return "", fmt.Errorf("%s to nie jest plik setu Live (.als)", filepath.Base(abs))
-	}
-	if _, err := os.Stat(abs); err != nil {
-		return "", fmt.Errorf("nie ma pliku %s", abs)
-	}
-	dir, name := filepath.Dir(abs), filepath.Base(abs)
-	if _, err := os.Stat(filepath.Join(dir, "Ableton Project Info")); err != nil {
-		return "", fmt.Errorf("%s nie lezy w folderze projektu Live. W Live: File > Save Live Set As (albo Collect All and Save) i wybierz zapisany set", name)
-	}
+// Create udostepnia folder sesji (sprawdzony wczesniej przez tui.InspectFolder)
+// z setem set (wzgledem dir) albo otwiera projekt, ktory juz tam jest.
+func (b *backend) Create(dir, set string) (string, error) {
 	p, err := store.Open(dir, *b.me)
 	switch {
 	case err == nil:
-		if p.Meta.Set != name {
+		if set != "" && p.Meta.Set != set {
 			return "", fmt.Errorf("w tym folderze jest juz projekt abcollab z setem %s", p.Meta.Set)
 		}
 	case errors.Is(err, store.ErrNotProject):
-		if p, _, err = store.Init(dir, name, *b.me); err != nil {
+		if set == "" {
+			return "", errors.New("w folderze nie ma seta")
+		}
+		if p, _, err = store.Init(dir, set, *b.me); err != nil {
 			return "", err
 		}
 	default:
@@ -376,7 +359,7 @@ func (b *backend) Create(set string) (string, error) {
 	if _, err := share(b.Node, p); err != nil {
 		return "", err
 	}
-	return dir, nil
+	return p.Dir, nil
 }
 
 func runProject(p *store.Project, node *syncthing.Node, invite bool) error {
