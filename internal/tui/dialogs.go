@@ -157,8 +157,21 @@ func newSettingsDialog(a *App) *settingsDialog {
 	return d
 }
 
+const settingsFixed = 3 // nick, auto sync, auto-save
+
+func onOff(b bool) string {
+	if b {
+		return "ON"
+	}
+	return "OFF"
+}
+
 func (d *settingsDialog) opts(a *App) []option {
-	o := []option{{label: "Nickname: " + a.me.Name, detail: "change how others see you"}}
+	o := []option{
+		{label: "Nickname: " + a.me.Name, detail: "change how others see you"},
+		{label: "Automatic sync: " + onOff(a.settings.AutoSync), detail: "when Live saves the set, share it right away and get others' changes on their own"},
+		{label: "Auto-save in Live: " + onOff(a.settings.AutoSave), detail: "press Ctrl+S in Live for you a few seconds after you change something (only while Live is in front; on macOS needs Accessibility permission)"},
+	}
 	for _, s := range d.sessions {
 		label := "Open session " + s.Name
 		if a.ses != nil && samePath(a.ses.p.Dir, s.Dir) {
@@ -186,10 +199,23 @@ func (d *settingsDialog) update(a *App, msg tea.Msg) (dialog, tea.Cmd) {
 	switch {
 	case i == 0:
 		return newNameDialog(a.me.Name, false), nil
+	case i == 1 || i == 2:
+		s := a.settings
+		if i == 1 {
+			s.AutoSync = !s.AutoSync
+		} else {
+			s.AutoSave = !s.AutoSave
+		}
+		if err := a.be.SetSettings(s); err != nil {
+			d.err = err.Error()
+			return d, nil
+		}
+		a.settings = s
+		return d, nil
 	case i == n-1:
 		return nil, nil
-	case i > 0:
-		s := d.sessions[i-1]
+	case i >= settingsFixed:
+		s := d.sessions[i-settingsFixed]
 		return nil, a.openCmd(s.Dir, false)
 	}
 	return d, nil

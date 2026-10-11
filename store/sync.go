@@ -68,7 +68,7 @@ func (p *Project) readWorking() ([]byte, *als.Doc, error) {
 // WorkingChanges: zmiany w pliku roboczym wzgledem mojej wersji.
 // Bez wersji (head == "") zwraca nil, true.
 func (p *Project) WorkingChanges() ([]als.Change, bool, error) {
-	head := p.Head()
+	head := p.Loaded()
 	if head == "" {
 		return nil, true, nil
 	}
@@ -99,7 +99,7 @@ func (p *Project) Commit() (*Version, error) {
 	if err != nil {
 		return nil, err
 	}
-	head := p.Head()
+	head := p.Loaded()
 	var parents, summary []string
 	if head == "" {
 		summary = []string{"first version"}
@@ -152,6 +152,10 @@ func (p *Project) writeVersion(data []byte, parents, summary []string) (*Version
 		return nil, err
 	}
 	if err := p.setHead(v.ID); err != nil {
+		return nil, err
+	}
+	// to, co zapisalem, jest w pliku roboczym - Live ma to wczytane
+	if err := p.setLoaded(v.ID); err != nil {
 		return nil, err
 	}
 	return v, nil
@@ -257,16 +261,30 @@ type PullResult struct {
 	ConflictWith Device
 	// Adopt: daty zapisu obu stron - okno wyboru zaznacza nowsza.
 	OursTime, TheirsTime time.Time
+	// Live: PullLive - plik roboczy nie byl podmieniany.
+	Live bool
 }
 
-// WorkingChanged: czy plik roboczy zostal podmieniony (Live musi go przeladowac).
+// WorkingChanged: czy przyszly zmiany (przy Pull plik roboczy zostal
+// podmieniony i Live musi go przeladowac).
 func (r *PullResult) WorkingChanged() bool { return len(r.FastForwarded) > 0 || len(r.Merged) > 0 }
 
 // Pull przyjmuje zmiany od wszystkich urzadzen: najpierw zapisuje moje
 // niezapisane zmiany jako wersje, potem po kolei przewija (fast-forward) albo
 // scala. Konflikt zatrzymuje scalanie na tym urzadzeniu.
 func (p *Project) Pull(res map[string]als.Resolution) (*PullResult, error) {
-	r := &PullResult{}
+	return p.pull(res, false)
+}
+
+// PullLive: jak Pull, ale nie podmienia pliku roboczego - Live jest otwarty i
+// dostaje zmiany na zywo (Remote Script). head idzie do przodu, Loaded
+// zostaje; czego nie dalo sie przeniesc na zywo, pokazuje PendingReload.
+func (p *Project) PullLive(res map[string]als.Resolution) (*PullResult, error) {
+	return p.pull(res, true)
+}
+
+func (p *Project) pull(res map[string]als.Resolution, live bool) (*PullResult, error) {
+	r := &PullResult{Live: live}
 	me := p.Head()
 	if me != "" {
 		v, err := p.Commit()
@@ -302,18 +320,24 @@ func (p *Project) Pull(res map[string]als.Resolution) (*PullResult, error) {
 		case RelSame, RelBehind:
 			continue
 		case RelAhead:
-			if me == "" {
-				if err := p.backupForeignWorking(vs[h], r); err != nil {
+			if live && me != "" {
+				if err := p.setHead(h); err != nil {
 					return nil, err
 				}
-			}
-			if err := p.checkout(vs[h]); err != nil {
-				return nil, err
+			} else {
+				if me == "" {
+					if err := p.backupForeignWorking(vs[h], r); err != nil {
+						return nil, err
+					}
+				}
+				if err := p.checkout(vs[h]); err != nil {
+					return nil, err
+				}
 			}
 			me = h
 			r.FastForwarded = append(r.FastForwarded, d)
 		case RelDiverged:
-			v, conflicts, warns, err := p.merge(vs, me, h, d, res)
+			v, conflicts, warns, err := p.merge(vs, me, h, d, res, !live)
 			if err != nil {
 				return nil, fmt.Errorf("merging with %s: %w", d.Name, err)
 			}
@@ -342,7 +366,49 @@ func (p *Project) checkout(v *Version) error {
 	if err := writeFileAtomic(p.WorkingPath(), data); err != nil {
 		return err
 	}
-	return p.setHead(v.ID)
+	if err := p.setHead(v.ID); err != nil {
+		return err
+	}
+	return p.setLoaded(v.ID)
+}
+
+// Reload: plik roboczy = head (po przeladowaniu w Live ma wszystko, rowniez
+// zmiany, ktorych nie dalo sie przeniesc na zywo).
+func (p *Project) Reload() error {
+	vs, err := p.Versions()
+	if err != nil {
+		return err
+	}
+	v := vs[p.Head()]
+	if v == nil {
+		return fmt.Errorf("no version to reload")
+	}
+	return p.checkout(v)
+}
+
+// PendingReload: zmiany w head, ktorych nie ma w wersji wczytanej w Live
+// (czesc z nich mogla dojsc na zywo - wolajacy odsiewa je sam).
+func (p *Project) PendingReload() ([]als.Change, error) {
+	head, loaded := p.Head(), p.Loaded()
+	if head == "" || head == loaded {
+		return nil, nil
+	}
+	vs, err := p.Versions()
+	if err != nil {
+		return nil, err
+	}
+	if vs[head] == nil || vs[loaded] == nil {
+		return nil, nil
+	}
+	a, err := p.LoadDoc(vs[loaded])
+	if err != nil {
+		return nil, err
+	}
+	b, err := p.LoadDoc(vs[head])
+	if err != nil {
+		return nil, err
+	}
+	return diffDocs(a, b), nil
 }
 
 // backupForeignWorking: dolaczam do projektu, a w folderze juz lezy set z inna
@@ -368,7 +434,7 @@ func (p *Project) backupForeignWorking(target *Version, r *PullResult) error {
 	return writeFileAtomic(r.Backup, data)
 }
 
-func (p *Project) merge(vs map[string]*Version, me, h string, d Device, res map[string]als.Resolution) (*Version, []als.Conflict, []als.Warning, error) {
+func (p *Project) merge(vs map[string]*Version, me, h string, d Device, res map[string]als.Resolution, writeWorking bool) (*Version, []als.Conflict, []als.Warning, error) {
 	base := MergeBase(vs, me, h)
 	if base == "" {
 		return nil, nil, nil, fmt.Errorf("no common history")
@@ -398,13 +464,23 @@ func (p *Project) merge(vs map[string]*Version, me, h string, d Device, res map[
 	// Najpierw plik roboczy, potem wersja: gdyby zapis pliku sie nie udal
 	// (np. zablokowany), head zostaje na mojej wersji i nastepny commit nie
 	// uzna starego pliku za "cofniecie" zmian drugiej strony.
-	if err := writeFileAtomic(p.WorkingPath(), data); err != nil {
-		return nil, nil, nil, err
+	if writeWorking {
+		if err := writeFileAtomic(p.WorkingPath(), data); err != nil {
+			return nil, nil, nil, err
+		}
 	}
 	summary := summarize("merge with "+d.Name, diffDocs(docs[1], mr.Doc))
+	loaded := p.Loaded()
 	v, err := p.writeVersion(data, []string{me, h}, summary)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	// writeVersion przestawia Loaded na nowa wersje - przy pracy na zywo Live
+	// jej nie wczytal, wiec wracamy do poprzedniej
+	if !writeWorking {
+		if err := p.setLoaded(loaded); err != nil {
+			return nil, nil, nil, err
+		}
 	}
 	return v, nil, mr.Warnings, nil
 }

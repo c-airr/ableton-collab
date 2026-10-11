@@ -449,3 +449,67 @@ func TestAdoptOwnCopy(t *testing.T) {
 		t.Error("host i gosc maja rozne sety")
 	}
 }
+
+// Praca na zywo: Live ma otwarta stara wersje, zmiany kolegi przychodza
+// (PullLive) bez podmiany pliku. Moj zapis z Live'a nie moze ich cofnac.
+func TestLiveSaveKeepsOthersChanges(t *testing.T) {
+	a := initPerson(t, "A", testdata(t, "base.als"))
+	b := joinPerson(t, "B", a)
+	mustPull(t, b, nil)
+	b.write(t, testdata(t, "theirs.als")) // B zmienia hihaty
+	if _, err := b.p.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	syncDirs(t, a, b)
+
+	before := a.working(t)
+	r, err := a.p.PullLive(nil)
+	if err != nil || len(r.FastForwarded) != 1 {
+		t.Fatalf("%v %+v", err, r)
+	}
+	if !bytes.Equal(a.working(t), before) {
+		t.Fatal("PullLive overwrote the working file")
+	}
+	if a.p.Loaded() == a.p.Head() {
+		t.Fatal("Loaded moved with head")
+	}
+	if pr, _ := a.p.PendingReload(); len(pr) == 0 {
+		t.Fatal("no pending changes to reload")
+	}
+	st, _ := a.p.Status()
+	if len(st.Changes) != 0 {
+		t.Fatalf("unchanged working file shows changes: %d", len(st.Changes))
+	}
+
+	// A w Live dodaje gitare (na bazie, bez hihatow B) i zapisuje
+	a.write(t, testdata(t, "ours.als"))
+	r, err = a.p.PullLive(nil)
+	if err != nil || r.Committed == nil || len(r.Merged) != 1 {
+		t.Fatalf("%v %+v", err, r)
+	}
+	vs, _ := a.p.Versions()
+	head, _ := a.p.LoadDoc(vs[a.p.Head()])
+	xml := string(head.XMLBytes())
+	if !strings.Contains(xml, "8-12 String Guitar") {
+		t.Error("my guitar missing from head")
+	}
+	bdoc := b.doc(t)
+	if d := als.Diff(bdoc, head); len(d) == 0 {
+		t.Fatal("head equals B's version - my save was lost")
+	}
+	// zmiany B w head zostaly (diff wzgledem B to tylko moja gitara)
+	for _, c := range als.Diff(bdoc, head) {
+		if strings.Contains(c.Label, "Hats") {
+			t.Errorf("my save reverted B's change: %s", c)
+		}
+	}
+	if !bytes.Equal(a.working(t), testdata(t, "ours.als")) {
+		t.Error("working file touched by the live merge")
+	}
+	if err := a.p.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if a.p.Loaded() != a.p.Head() {
+		t.Error("reload didn't set Loaded")
+	}
+}

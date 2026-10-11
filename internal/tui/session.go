@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/c-airr/ableton-collab/als"
+	"github.com/c-airr/ableton-collab/internal/live"
 	"github.com/c-airr/ableton-collab/store"
 	"github.com/c-airr/ableton-collab/transport/syncthing"
 
@@ -36,7 +37,22 @@ type session struct {
 	heads    map[string]string // ostatnio widziana wersja innych - do logu "X edited"
 	reqSeen  map[string]bool
 	ticks    int
+
+	// praca na zywo
+	live      LiveSync
+	liveSt    live.Status
+	liveQueue []live.Note  // konflikty czekajace na okno
+	reload    []als.Change // zmiany innych, ktore wymagaja przeladowania w Live
+	dirty     bool         // w Live sa zmiany niezapisane do pliku
+	lastLocal time.Time    // ostatnia moja zmiana w Live
+	lastTry   time.Time    // ostatnia proba auto-zapisu
+	mtime     time.Time    // data pliku seta przy ostatnim sprawdzeniu
+	saveErr   string
 }
+
+// liveOn: Live ma otwarty set tej sesji i skrypt dziala - zmiany ida na zywo,
+// plik seta nie jest podmieniany przy pobieraniu.
+func (s *session) liveOn() bool { return s.live != nil && s.liveSt.Matched }
 
 type logLine struct {
 	at    time.Time
@@ -73,8 +89,25 @@ type refreshMsg struct {
 	lobby    *syncthing.Lobby
 	lobbyErr error
 	tree     []treeNode
+	reload   []als.Change
+	mtime    time.Time
 	err      error
 }
+
+type liveMsg struct {
+	sid  int
+	note live.Note
+	ok   bool
+}
+
+type savedKeyMsg struct {
+	sid  int
+	sent bool
+	err  error
+}
+
+func (m liveMsg) sessionID() int     { return m.sid }
+func (m savedKeyMsg) sessionID() int { return m.sid }
 
 type eventsMsg struct {
 	sid  int
@@ -102,6 +135,16 @@ func (s *session) refreshCmd(sid int) tea.Cmd {
 			r.lobby, r.lobbyErr = net.Lobby()
 		}
 		r.tree = scanTree(dir, 5000)
+		if fi, err := os.Stat(p.WorkingPath()); err == nil {
+			r.mtime = fi.ModTime()
+		}
+		if pr, err := p.PendingReload(); err == nil {
+			for _, c := range pr {
+				if !liveSyncable(c) {
+					r.reload = append(r.reload, c)
+				}
+			}
+		}
 		st, err := p.Status()
 		if err != nil {
 			r.err = err
@@ -147,13 +190,44 @@ func (s *session) handle(a *App, msg sessionMsg) (tea.Model, tea.Cmd) {
 		}
 		s.noticeRequests()
 		s.clampPeer()
-		return *a, nil
+		if len(m.reload) > 0 && len(s.reload) == 0 {
+			s.logf(lWarn, "Reload the set to get %d change(s) that can't come in live (e.g. %s)", len(m.reload), shortChange(m.reload[0].String()))
+		}
+		s.reload = m.reload
+		saved := !s.mtime.IsZero() && !m.mtime.IsZero() && !m.mtime.Equal(s.mtime)
+		if !m.mtime.IsZero() {
+			s.mtime = m.mtime
+		}
+		if saved && s.live != nil {
+			s.live.Recheck() // po zapisie plik zgadza sie z Live (np. nowe sciezki)
+		}
+		return *a, s.auto(a, saved)
 
 	case eventsMsg:
 		for _, e := range m.evs {
 			s.logEvent(e)
 		}
 		return *a, s.eventsCmd(m.sid, m.next)
+
+	case liveMsg:
+		if !m.ok {
+			return *a, nil // silnik zamkniety
+		}
+		s.onLive(a, m.note)
+		return *a, s.liveCmd(m.sid)
+
+	case savedKeyMsg:
+		switch {
+		case m.err != nil:
+			if s.saveErr != m.err.Error() {
+				s.saveErr = m.err.Error()
+				s.logf(lWarn, "Auto-save: %s", m.err.Error())
+			}
+		case m.sent:
+			s.dirty, s.saveErr = false, ""
+			s.logf(lInfo, "Saved in Live (Ctrl+S)")
+		}
+		return *a, nil
 
 	case actionMsg:
 		s.busy = ""
@@ -165,10 +239,11 @@ func (s *session) handle(a *App, msg sessionMsg) (tea.Model, tea.Cmd) {
 			s.logf(lErr, "%s", m.err.Error())
 			a.say(lErr, m.err.Error())
 		}
-		if m.pull != nil && len(m.pull.Conflicts) > 0 {
+		if m.pull != nil && len(m.pull.Conflicts) > 0 && a.dlg == nil {
+			liveMode := s.liveOn()
 			a.dlg = newConflictDialog(a, m.pull, nil, func(a *App, res map[string]als.Resolution) (dialog, tea.Cmd) {
 				a.ses.busy = "merging"
-				return nil, a.ses.pullCmd(a.sid, res)
+				return nil, a.ses.pullCmd(a.sid, res, liveMode)
 			})
 		}
 		s.busy = refreshing
@@ -270,10 +345,14 @@ func (s *session) commitCmd(sid int) tea.Cmd {
 	}
 }
 
-func (s *session) pullCmd(sid int, res map[string]als.Resolution) tea.Cmd {
+func (s *session) pullCmd(sid int, res map[string]als.Resolution, liveMode bool) tea.Cmd {
 	p, now := s.p, s.now
 	return func() tea.Msg {
-		r, err := p.Pull(res)
+		pull := p.Pull
+		if liveMode {
+			pull = p.PullLive
+		}
+		r, err := pull(res)
 		if err != nil {
 			return actionMsg{sid: sid, err: err}
 		}
@@ -305,7 +384,7 @@ func pullLines(p *store.Project, r *store.PullResult, at time.Time) []logLine {
 	if len(r.Conflicts) > 0 {
 		add(lErr, "%d conflict(s) with %s - choose what to keep", len(r.Conflicts), r.ConflictWith.Name)
 	}
-	if r.WorkingChanged() {
+	if r.WorkingChanged() && !r.Live {
 		add(lWarn, "%s was updated - reopen it in Live and don't save the old one", p.SetName())
 	}
 	if len(out) == 0 {

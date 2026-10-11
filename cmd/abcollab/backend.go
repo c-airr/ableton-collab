@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/c-airr/ableton-collab/als"
+	"github.com/c-airr/ableton-collab/internal/live"
 	"github.com/c-airr/ableton-collab/internal/tui"
 	"github.com/c-airr/ableton-collab/store"
 	"github.com/c-airr/ableton-collab/transport/syncthing"
@@ -65,7 +67,8 @@ func saveDevice(path string, d store.Device) error {
 
 // appState: to, co panel pamieta miedzy uruchomieniami.
 type appState struct {
-	Last string `json:"last,omitempty"` // sesja otwierana przy starcie
+	Last     string        `json:"last,omitempty"` // sesja otwierana przy starcie
+	Settings *tui.Settings `json:"settings,omitempty"`
 }
 
 func statePath() string {
@@ -129,8 +132,9 @@ func share(n *syncthing.Node, p *store.Project) (*syncthing.Project, error) {
 // --- backend panelu -------------------------------------------------------------------------
 
 type backend struct {
-	node *syncthing.Node // nil: -offline
-	me   *store.Device
+	node  *syncthing.Node // nil: -offline
+	me    *store.Device
+	token string // sekret skryptu AbletonCollab ("" - bez pracy na zywo)
 }
 
 func (b *backend) DeviceID() string {
@@ -233,6 +237,55 @@ func (b *backend) Join(inv syncthing.Invite, dir string, existing bool) (tui.Net
 	return network(p), nil
 }
 
+func (b *backend) Settings() tui.Settings {
+	if s := loadState().Settings; s != nil {
+		return *s
+	}
+	return tui.Settings{AutoSync: true, AutoSave: live.AutoSaveDefault}
+}
+
+func (b *backend) SetSettings(set tui.Settings) error {
+	s := loadState()
+	s.Settings = &set
+	saveState(s)
+	return nil
+}
+
+func (b *backend) SaveInLive() (bool, error) { return live.SaveInLive() }
+
+// liveSync: silnik i jego polaczenie ze skryptem (zamykane razem).
+type liveSync struct {
+	*live.Engine
+	cl *live.Client
+}
+
+func (l liveSync) Close() { l.Engine.Close(); l.cl.Close() }
+
+func (b *backend) Live(p *store.Project) tui.LiveSync {
+	if b.token == "" || b.node == nil {
+		return nil
+	}
+	names := func(dev string) string {
+		if ds, err := p.Devices(); err == nil {
+			for _, d := range ds {
+				if d.ID == dev {
+					return d.Name
+				}
+			}
+		}
+		return dev
+	}
+	tracks := func() []string {
+		doc, err := als.ReadFile(p.WorkingPath())
+		if err != nil {
+			return nil
+		}
+		return als.TrackNames(doc)
+	}
+	cl := live.Dial(live.Addr, b.token)
+	return liveSync{Engine: live.Start(cl, filepath.Join(p.Dir, store.Dir), p.Me.ID, names, tracks), cl: cl}
+}
+
 func (b *backend) SetLast(dir string) {
 	s := loadState()
 	s.Last = dir
@@ -262,6 +315,31 @@ func browseFrom() string {
 	return home
 }
 
+// installLive instaluje/aktualizuje skrypt AbletonCollab w Live (User
+// Library). Zwraca token ("" - nie ma gdzie zainstalowac).
+func installLive() string {
+	dir, err := configDir()
+	if err != nil {
+		return ""
+	}
+	token, err := live.Token(filepath.Join(dir, "live-token.txt"))
+	if err != nil {
+		return ""
+	}
+	dirs, changed, err := live.Install(token)
+	switch {
+	case err != nil:
+		fmt.Fprintln(os.Stderr, "can't install the Live script:", err)
+		return ""
+	case len(dirs) == 0:
+		fmt.Fprintln(os.Stderr, "Ableton Live's User Library not found - live sync is off (set ABCOLLAB_USER_LIBRARY)")
+		return ""
+	case changed:
+		fmt.Fprintln(os.Stderr, "installed the AbletonCollab script for Live - restart Live and pick it in Settings > Link, Tempo & MIDI > Control Surface")
+	}
+	return token
+}
+
 // runTUI: panel. dir (z -C) - od razu ta sesja; inaczej ostatnio otwarta.
 func runTUI(dir string, offline bool, code string) error {
 	d, isNew, err := loadDevice()
@@ -285,6 +363,9 @@ func runTUI(dir string, offline bool, code string) error {
 		}
 	}
 	be := &backend{node: node, me: &d}
+	if !offline {
+		be.token = installLive()
+	}
 	app := tui.New(be, tui.Options{Me: d, AskName: isNew, Last: last, BaseDir: defaultProjectsDir(),
 		BrowseFrom: browseFrom(), Offline: offline, JoinCode: code})
 	_, err = tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()

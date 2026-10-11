@@ -144,6 +144,11 @@ func (n *Node) Share(dir, folderID, label string) (*Project, error) {
 		if !samePath(f.Path, dir) {
 			return nil, fmt.Errorf("this session is already shared from another folder: %s", f.Path)
 		}
+		if f.FsWatcherDelayS != 1 {
+			if err := n.PatchFolder(folderID, map[string]any{"fsWatcherDelayS": 1}); err != nil {
+				return nil, err
+			}
+		}
 		return p, nil
 	}
 	return p, n.AddFolder(FolderConfig{ID: folderID, Label: label, Path: dir, Devices: []FolderDevice{{DeviceID: n.ID}}})

@@ -348,6 +348,28 @@ func (p *Project) setHead(id string) error {
 	return writeFileAtomic(filepath.Join(p.devDir(p.Me.ID), "head"), []byte(id+"\n"))
 }
 
+// Loaded: wersja, ktora Live ma wczytana (plik roboczy to ona plus zmiany
+// jeszcze niezapisane jako wersja). Przy pracy na zywo (PullLive) head idzie
+// do przodu bez podmiany pliku, wiec Loaded bywa starsza niz head - moj
+// nastepny zapis z Live'a ma ja za rodzica, a scalenie z head zachowuje
+// zmiany innych, ktorych Live nie wczytal (zwykly zapis by je "cofnal").
+func (p *Project) Loaded() string {
+	data, err := os.ReadFile(filepath.Join(p.devDir(p.Me.ID), "loaded"))
+	if err == nil {
+		if id := strings.TrimSpace(string(data)); validID(id) {
+			return id
+		}
+	}
+	return p.Head()
+}
+
+func (p *Project) setLoaded(id string) error {
+	if err := p.ensureMe(); err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(p.devDir(p.Me.ID), "loaded"), []byte(id+"\n"))
+}
+
 // --- DAG ----------------------------------------------------------------------------
 
 func ancestors(vs map[string]*Version, id string) map[string]bool {

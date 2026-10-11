@@ -90,6 +90,9 @@ type FolderConfig struct {
 	Path    string         `json:"path"`
 	Type    string         `json:"type,omitempty"`
 	Devices []FolderDevice `json:"devices"`
+	// FsWatcherDelayS: po ilu sekundach od zmiany na dysku Syncthing ja
+	// wysyla (domyslnie 10 - za wolno na prace na zywo).
+	FsWatcherDelayS int `json:"fsWatcherDelayS,omitempty"`
 }
 
 func (c *Client) Devices() ([]DeviceConfig, error) {
@@ -126,7 +129,14 @@ func (c *Client) AddFolder(f FolderConfig) error {
 	if f.Type == "" {
 		f.Type = "sendreceive"
 	}
+	if f.FsWatcherDelayS == 0 {
+		f.FsWatcherDelayS = 1
+	}
 	return c.do("POST", "/rest/config/folders", f, nil)
+}
+
+func (c *Client) PatchFolder(id string, patch map[string]any) error {
+	return c.do("PATCH", "/rest/config/folders/"+url.PathEscape(id), patch, nil)
 }
 
 func (c *Client) SetFolderDevices(id string, devs []FolderDevice) error {

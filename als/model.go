@@ -267,3 +267,16 @@ func isLandmark(n, parent *Node) bool {
 		(n.Name == "ClipSlot" && parent != nil && parent.Name == "ClipSlotList") ||
 		(parent != nil && parent.Name == "Devices")
 }
+
+// TrackNames: nazwy sciezek w kolejnosci jak song.tracks w API Live'a
+// (sciezki powrotne i Main sa poza ta lista).
+func TrackNames(d *Doc) []string {
+	var out []string
+	for _, t := range tracks(d) {
+		if t.Name == "ReturnTrack" {
+			continue
+		}
+		out = append(out, trackName(t))
+	}
+	return out
+}

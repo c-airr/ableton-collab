@@ -215,8 +215,26 @@ func (a App) statusLines(w int) []string {
 		return append([]string{sDim.Render("no session"), ""}, msg...)
 	}
 	s := a.ses
-	out := []string{sBold.Render(sessionName(s.p)) + sDim.Render("  ·  "+s.p.SetName()), a.connLine(), ""}
+	out := []string{sBold.Render(sessionName(s.p)) + sDim.Render("  ·  "+s.p.SetName()), a.connLine(), a.liveLine(), ""}
 	return append(out, msg...)
+}
+
+// liveLine: polaczenie z Live'em (praca na zywo).
+func (a App) liveLine() string {
+	s := a.ses
+	mode := "manual"
+	if a.settings.AutoSync {
+		mode = "auto"
+	}
+	switch {
+	case s.live == nil:
+		return sDim.Render("♪ Live: not available")
+	case s.liveSt.Matched:
+		return sOKText.Render("♪ Live: live sync on") + sDim.Render(" · "+mode)
+	case s.liveSt.Detail != "":
+		return sWarnText.Render("♪ " + s.liveSt.Detail)
+	}
+	return sDim.Render("♪ Live: waiting for Live")
 }
 
 // connLine: ilu ludzi jest polaczonych.
@@ -579,6 +597,8 @@ func (a App) status() (string, level) {
 	switch {
 	case s.busy != "" && s.busy != refreshing:
 		return "⟳ " + strings.ToUpper(s.busy[:1]) + s.busy[1:] + "...", lWarn
+	case len(s.liveQueue) > 0:
+		return fmt.Sprintf("Live conflict with %s - choose which version stays", s.liveQueue[0].From), lErr
 	case s.err != nil:
 		return s.err.Error(), lErr
 	case s.lobbyErr != nil:
@@ -602,7 +622,13 @@ func (a App) status() (string, level) {
 		if s.st.Head == nil {
 			return "You don't have the set yet - press Get changes", lWarn
 		}
-		if n := len(s.st.Changes); n > 0 {
+		if len(s.reload) > 0 {
+			return fmt.Sprintf("Reload the set to see %d change(s) from others - press Reload set", len(s.reload)), lWarn
+		}
+		if s.dirty && !a.settings.AutoSave && s.liveOn() {
+			return "Save in Live (Ctrl+S) to share track/device changes", lInfo
+		}
+		if n := len(s.st.Changes); n > 0 && !a.settings.AutoSync {
 			return fmt.Sprintf("Your set has %d unsaved change(s) - press Save to share them", n), lInfo
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/c-airr/ableton-collab/als"
+	"github.com/c-airr/ableton-collab/internal/live"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -109,13 +110,65 @@ var noteNames = []string{"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "
 // noteName: jak w Live (60 = C3).
 func noteName(k int) string { return noteNames[k%12] + strconv.Itoa(k/12-2) }
 
-// pianoRoll: wiersze = wysokosci dzwieku (wysokie u gory), kolumny = czas.
+// pianoRoll: podglad klipu z pliku .als.
 func pianoRoll(n *als.Node, w, h int) []string {
 	notes := clipNotes(n)
+	start, end := clipRange(n, notes)
+	return rollLines(notes, start, end, w, h)
+}
+
+// livePreview: podglad stanu ze skryptu Live (klip, mikser albo tempo).
+func livePreview(o live.Obj, w, h int) []string {
+	if o == nil {
+		return []string{sErr.Render("(deleted)")}
+	}
+	if empty, _ := o["empty"].(bool); empty {
+		return []string{sErr.Render("(no clip)")}
+	}
+	num := func(k string) float64 { v, _ := o[k].(float64); return v }
+	if raw, ok := o["notes"].([]any); ok {
+		var notes []midiNote
+		for _, x := range raw {
+			n, ok := x.([]any)
+			if !ok || len(n) < 4 {
+				continue
+			}
+			f := func(i int) float64 { v, _ := n[i].(float64); return v }
+			notes = append(notes, midiNote{key: int(f(0)), start: f(1), length: f(2), vel: f(3)})
+		}
+		start, end := 0.0, 0.0
+		if lp, ok := o["loop"].([]any); ok && len(lp) == 2 {
+			start, _ = lp[0].(float64)
+			end, _ = lp[1].(float64)
+		}
+		if end <= start {
+			for _, nt := range notes {
+				end = max(end, nt.start+nt.length)
+			}
+		}
+		if end <= start {
+			end = start + 4
+		}
+		return rollLines(notes, start, end, w, h)
+	}
+	if _, ok := o["bpm"]; ok {
+		return []string{fmt.Sprintf("%g BPM", num("bpm"))}
+	}
+	if _, ok := o["vol"]; ok {
+		mute := "off"
+		if m, _ := o["mute"].(bool); m {
+			mute = "on"
+		}
+		return []string{fmt.Sprintf("volume %.2f", num("vol")), fmt.Sprintf("pan %+.2f", num("pan")), "mute " + mute}
+	}
+	return []string{sDim.Render("(changed)")}
+}
+
+// rollLines: wiersze = wysokosci dzwieku (wysokie u gory), kolumny = czas.
+func rollLines(notes []midiNote, start, end float64, w, h int) []string {
 	if len(notes) == 0 {
 		return []string{sDim.Render("(empty clip)")}
 	}
-	start, end := clipRange(n, notes)
 	keys := map[int]int{}
 	for _, nt := range notes {
 		keys[nt.key]++

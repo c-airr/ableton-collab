@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/c-airr/ableton-collab/internal/live"
 	"github.com/c-airr/ableton-collab/store"
 	"github.com/c-airr/ableton-collab/transport/syncthing"
 
@@ -30,6 +31,27 @@ type Backend interface {
 	Join(inv syncthing.Invite, dir string, existing bool) (Network, error)
 	// SetLast zapamietuje sesje otwierana przy starcie ("" - zadna).
 	SetLast(dir string)
+	// Live: synchronizacja na zywo z otwartym Live'em (nil - niedostepna).
+	Live(p *store.Project) LiveSync
+	Settings() Settings
+	SetSettings(Settings) error
+	// SaveInLive wysyla Ctrl+S do Live'a, jesli jest na wierzchu.
+	SaveInLive() (bool, error)
+}
+
+// Settings: przelaczniki w Settings (pamietane miedzy uruchomieniami).
+type Settings struct {
+	AutoSync bool `json:"autoSync"` // zapis z Live'a -> wersja, zmiany innych pobierane same
+	AutoSave bool `json:"autoSave"` // abcollab sam wciska Ctrl+S w Live po zmianach
+}
+
+// LiveSync: silnik pracy na zywo jednej sesji (*live.Engine).
+type LiveSync interface {
+	Notes() <-chan live.Note
+	Status() live.Status
+	Resolve(key string, mine bool)
+	Recheck()
+	Close()
 }
 
 type SessionRef struct {
@@ -82,6 +104,7 @@ type App struct {
 
 	pollEvery time.Duration
 	now       func() time.Time
+	settings  Settings
 }
 
 type centerMode int
@@ -108,7 +131,8 @@ const (
 )
 
 func New(be Backend, o Options) App {
-	a := App{be: be, opts: o, me: o.Me, w: 100, h: 30, focus: fButtons, pollEvery: 2 * time.Second, now: time.Now}
+	a := App{be: be, opts: o, me: o.Me, w: 100, h: 30, focus: fButtons, pollEvery: 2 * time.Second, now: time.Now,
+		settings: be.Settings()}
 	if o.Last != "" {
 		a.sid = 1
 	}
@@ -234,6 +258,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // startSession: sesja otwarta - od teraz panel ja pokazuje.
 func (a *App) startSession(p *store.Project, net Network) tea.Cmd {
+	if a.ses != nil && a.ses.live != nil {
+		a.ses.live.Close()
+	}
 	a.ses = newSession(p, net, a.now)
 	a.ses.tree.expandTo(p.Meta.Set)
 	a.ses.tree.sel = p.Meta.Set
@@ -244,6 +271,10 @@ func (a *App) startSession(p *store.Project, net Network) tea.Cmd {
 	a.ses.busy = refreshing
 	if net != nil {
 		cmds = append(cmds, a.ses.eventsCmd(a.sid, 0))
+	}
+	if ls := a.be.Live(p); ls != nil {
+		a.ses.live = ls
+		cmds = append(cmds, a.ses.liveCmd(a.sid))
 	}
 	return tea.Batch(cmds...)
 }
@@ -339,6 +370,9 @@ func (a App) leave() (tea.Model, tea.Cmd) {
 		a.say(lInfo, "Left session "+sessionName(a.ses.p)+" - reopen it from Settings")
 	}
 	a.sid++
+	if a.ses != nil && a.ses.live != nil {
+		a.ses.live.Close()
+	}
 	a.ses = nil
 	a.center = cLog
 	a.focus, a.btn = fButtons, 0
@@ -449,6 +483,9 @@ func (a App) buttons() []button {
 		hist = "Log"
 	}
 	bs = append(bs, button{id: "history", label: hist, key: "y"})
+	if len(s.reload) > 0 {
+		bs = append(bs, button{id: "reload", label: "Reload set", key: "u"})
+	}
 	// przyciski zalezne od zaznaczenia
 	switch {
 	case a.focus == fFiles && s.tree.selectedDeletable(s.p) != "":
@@ -504,6 +541,11 @@ func (a App) press(id string) (tea.Model, tea.Cmd) {
 	case "invite":
 		a.dlg = newInviteDialog(&a)
 		return a, nil
+	case "reload":
+		a.dlg = newConfirmDialog("Reload "+s.p.SetName()+"?",
+			[]string{"The set file gets the latest version with everyone's changes. Save in Live first if you changed something, then reload it in Live: File > Open Recent > " + s.p.SetName() + " (don't save the old one)."},
+			"Reload", false, func(a *App) tea.Cmd { return a.ses.reloadCmd(a.sid) })
+		return a, nil
 	case "delete":
 		path := s.tree.selectedDeletable(s.p)
 		if path == "" {
@@ -534,7 +576,7 @@ func (a App) press(id string) (tea.Model, tea.Cmd) {
 		return a, s.commitCmd(a.sid)
 	case "get":
 		s.busy = "getting changes"
-		return a, s.pullCmd(a.sid, nil)
+		return a, s.pullCmd(a.sid, nil, s.liveOn())
 	case "accept":
 		r := s.selRequest()
 		if r == nil {
