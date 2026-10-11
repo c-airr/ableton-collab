@@ -2,7 +2,7 @@ package als
 
 import (
 	"fmt"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 )
@@ -60,8 +60,15 @@ func normPath(p string) string {
 	if p == "" {
 		return ""
 	}
-	p = filepath.ToSlash(filepath.Clean(p))
-	return strings.ToLower(strings.TrimSuffix(p, "/"))
+	// Sciezki w .als sa windowsowe niezaleznie od systemu, na ktorym czytamy
+	// (Live pod Wine zapisuje Z:\home\...), wiec "\\" zamieniamy zawsze.
+	p = path.Clean(strings.ReplaceAll(p, `\`, "/"))
+	p = strings.ToLower(strings.TrimSuffix(p, "/"))
+	// Wine: dysk Z: to katalog glowny Linuksa
+	if strings.HasPrefix(p, "z:/") {
+		p = p[2:]
+	}
+	return p
 }
 
 // Plugins zwraca nazwy wtyczek (VST2/VST3/AU) uzytych w projekcie.

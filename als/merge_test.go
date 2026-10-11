@@ -403,3 +403,14 @@ func TestAssetWarnings(t *testing.T) {
 		t.Errorf("ostrzezenia: %v", ws)
 	}
 }
+
+// Live pod Wine zapisuje sciezki Z:\home\..., a folder projektu jest linuksowy.
+func TestSamplesUnderWine(t *testing.T) {
+	b := baseSet()
+	b.tracks[0].devices = `<OriginalSimpler Id="0"><SampleRef><FileRef><RelativePath Value="Samples/a.wav" />` +
+		`<Path Value="Z:\home\bartek\beat\Samples\a.wav" /><LivePackName Value="" /></FileRef></SampleRef></OriginalSimpler>`
+	ss := Samples(b.doc(t), "/home/bartek/beat")
+	if len(ss) != 1 || ss[0].Where != "in-project" {
+		t.Fatalf("%+v", ss)
+	}
+}
