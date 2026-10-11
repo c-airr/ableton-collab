@@ -1,0 +1,15 @@
+# binarki i wyniki
+bin/
+out/
+*.exe
+*.tmp
+
+# dokumentacja trzymana lokalnie
+*.md
+
+# prawdziwe projekty Live uzytkownika (testy bez nich sa pomijane)
+testdata/
+*.als
+
+# dane abcollab w folderach projektow
+.abcollab/
