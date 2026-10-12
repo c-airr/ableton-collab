@@ -111,6 +111,9 @@ const ignores = `// abcollab: do not edit - rewritten on every start
 *.als
 Backup
 Ableton Project Info
+(?i)desktop.ini
+(?i)thumbs.db
+.DS_Store
 `
 
 func writeIgnores(dir string) error {
@@ -144,8 +147,8 @@ func (n *Node) Share(dir, folderID, label string) (*Project, error) {
 		if !samePath(f.Path, dir) {
 			return nil, fmt.Errorf("this session is already shared from another folder: %s", f.Path)
 		}
-		if f.FsWatcherDelayS != 1 {
-			if err := n.PatchFolder(folderID, map[string]any{"fsWatcherDelayS": 1}); err != nil {
+		if f.FsWatcherDelayS != 1 || !f.IgnorePerms {
+			if err := n.PatchFolder(folderID, map[string]any{"fsWatcherDelayS": 1, "ignorePerms": true}); err != nil {
 				return nil, err
 			}
 		}

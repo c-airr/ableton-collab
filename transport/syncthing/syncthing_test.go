@@ -88,6 +88,9 @@ func TestPairing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if f, err := host.Folder(FolderID(hp.Meta.ID)); err != nil || !f.IgnorePerms || f.FsWatcherDelayS != 1 {
+		t.Fatalf("folder options: %+v %v", f, err)
+	}
 	code := hshare.Invite("Ja")
 
 	// gosc wkleja kod

@@ -513,3 +513,30 @@ func TestLiveSaveKeepsOthersChanges(t *testing.T) {
 		t.Error("reload didn't set Loaded")
 	}
 }
+
+// Folder projektu z Windowsa przychodzi jako "tylko do odczytu" (r-x) - pobranie
+// seta musi go naprawic, a nie konczyc sie "permission denied".
+func TestCheckoutIntoReadOnlyDir(t *testing.T) {
+	set := testdata(t, "base.als")
+	dir := filepath.Join(t.TempDir(), "sesja")
+	os.MkdirAll(filepath.Join(dir, "x Project"), 0o755)
+	os.WriteFile(filepath.Join(dir, "x Project", "x.als"), set, 0o644)
+	if _, _, err := Init(dir, "x Project/x.als", NewDevice("Ja")); err != nil {
+		t.Fatal(err)
+	}
+	gdir := filepath.Join(t.TempDir(), "gosc")
+	copyTree(t, filepath.Join(dir, Dir), filepath.Join(gdir, Dir))
+	os.MkdirAll(filepath.Join(gdir, "x Project"), 0o755)
+	os.Chmod(filepath.Join(gdir, "x Project"), 0o555)
+	defer os.Chmod(filepath.Join(gdir, "x Project"), 0o755)
+	g, err := Open(gdir, NewDevice("Kolega"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Pull(nil); err != nil {
+		t.Fatalf("pull into a read-only project dir: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(gdir, "x Project", "x.als")); !bytes.Equal(got, set) {
+		t.Fatal("set not written")
+	}
+}

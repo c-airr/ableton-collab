@@ -93,6 +93,10 @@ type FolderConfig struct {
 	// FsWatcherDelayS: po ilu sekundach od zmiany na dysku Syncthing ja
 	// wysyla (domyslnie 10 - za wolno na prace na zywo).
 	FsWatcherDelayS int `json:"fsWatcherDelayS,omitempty"`
+	// IgnorePerms: bez przenoszenia uprawnien. Windows oznacza folder projektu
+	// Live'a (z Desktop.ini) jako "tylko do odczytu" i na Linuksie/macOS
+	// powstawal folder bez prawa zapisu - set nie dal sie zapisac.
+	IgnorePerms bool `json:"ignorePerms"`
 }
 
 func (c *Client) Devices() ([]DeviceConfig, error) {
@@ -132,6 +136,7 @@ func (c *Client) AddFolder(f FolderConfig) error {
 	if f.FsWatcherDelayS == 0 {
 		f.FsWatcherDelayS = 1
 	}
+	f.IgnorePerms = true
 	return c.do("POST", "/rest/config/folders", f, nil)
 }
 

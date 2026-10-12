@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -360,7 +361,7 @@ func (p *Project) checkout(v *Version) error {
 		return err
 	}
 	// set moze lezec w podfolderze, ktory u nas jeszcze nie istnieje
-	if err := os.MkdirAll(filepath.Dir(p.WorkingPath()), 0o755); err != nil {
+	if err := writableDir(filepath.Dir(p.WorkingPath())); err != nil {
 		return err
 	}
 	if err := writeFileAtomic(p.WorkingPath(), data); err != nil {
@@ -370,6 +371,26 @@ func (p *Project) checkout(v *Version) error {
 		return err
 	}
 	return p.setLoaded(v.ID)
+}
+
+// writableDir: folder istnieje i da sie w nim pisac. Folder projektu Live'a
+// przyniesiony z Windowsa bywa "tylko do odczytu" (atrybut od Desktop.ini,
+// przeniesiony przez Syncthing jako r-x) - wtedy przywracamy prawo zapisu.
+func writableDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if fi.Mode().Perm()&0o200 == 0 {
+		return os.Chmod(dir, fi.Mode().Perm()|0o700)
+	}
+	return nil
 }
 
 // Reload: plik roboczy = head (po przeladowaniu w Live ma wszystko, rowniez
@@ -465,6 +486,9 @@ func (p *Project) merge(vs map[string]*Version, me, h string, d Device, res map[
 	// (np. zablokowany), head zostaje na mojej wersji i nastepny commit nie
 	// uzna starego pliku za "cofniecie" zmian drugiej strony.
 	if writeWorking {
+		if err := writableDir(filepath.Dir(p.WorkingPath())); err != nil {
+			return nil, nil, nil, err
+		}
 		if err := writeFileAtomic(p.WorkingPath(), data); err != nil {
 			return nil, nil, nil, err
 		}
@@ -542,7 +566,7 @@ func (p *Project) Adopt(local string, res map[string]als.Resolution) (*PullResul
 	if err := writeFileAtomic(r.Backup, ldata); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(p.WorkingPath()), 0o755); err != nil {
+	if err := writableDir(filepath.Dir(p.WorkingPath())); err != nil {
 		return nil, err
 	}
 	if err := writeFileAtomic(p.WorkingPath(), data); err != nil {
