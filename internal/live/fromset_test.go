@@ -12,6 +12,9 @@ import (
 func readSet(t *testing.T, name string) *als.Doc {
 	t.Helper()
 	d, err := als.ReadFile(filepath.Join("..", "..", "testdata", name))
+	if os.IsNotExist(err) {
+		t.Skip("no testdata/" + name) // prawdziwe sety nie sa w repo
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
