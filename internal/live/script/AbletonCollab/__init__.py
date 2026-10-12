@@ -25,7 +25,7 @@ import Live
 from _Framework.ControlSurface import ControlSurface
 
 PORT = 9879
-VERSION = 2
+VERSION = 3
 SESSION_KEY = "abcollab.session"
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEBOUNCE = 0.3
@@ -384,11 +384,13 @@ class AbletonCollab(ControlSurface):
                 try:
                     self._apply(key, msg.get("obj") or {})
                     self._dirty.pop(key, None)
+                    now = None
                     try:
-                        self._last[key] = canon(self._read(key))
+                        now = self._read(key)
+                        self._last[key] = canon(now)
                     except Exception:
                         pass
-                    self._send({"t": "applied", "id": msg.get("id"), "key": key, "ok": True})
+                    self._send({"t": "applied", "id": msg.get("id"), "key": key, "ok": True, "obj": now})
                 except Exception as e:
                     self._send({"t": "applied", "id": msg.get("id"), "key": key, "ok": False, "err": str(e)})
             elif op == "ping":

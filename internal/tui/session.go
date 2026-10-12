@@ -43,6 +43,7 @@ type session struct {
 	liveSt    live.Status
 	liveQueue []live.Note  // konflikty czekajace na okno
 	reload    []als.Change // zmiany innych, ktore wymagaja przeladowania w Live
+	caught    string       // para wersji (wczytana>head), ktorej zmiany poszly juz do Live'a
 	dirty     bool         // w Live sa zmiany niezapisane do pliku
 	lastLocal time.Time    // ostatnia moja zmiana w Live
 	lastTry   time.Time    // ostatnia proba auto-zapisu
@@ -92,6 +93,9 @@ type refreshMsg struct {
 	reload   []als.Change
 	mtime    time.Time
 	err      error
+	// zmiany z nowszej wersji do naniesienia w Live (pair: wczytana>head)
+	pair    string
+	catchup []live.Catch
 }
 
 type liveMsg struct {
@@ -128,7 +132,7 @@ func (m eventsMsg) sessionID() int  { return m.sid }
 func (m actionMsg) sessionID() int  { return m.sid }
 
 func (s *session) refreshCmd(sid int) tea.Cmd {
-	p, net, dir, liveOn := s.p, s.net, s.p.Dir, s.liveOn()
+	p, net, dir, liveOn, caught := s.p, s.net, s.p.Dir, s.liveOn(), s.caught
 	return func() tea.Msg {
 		r := refreshMsg{sid: sid}
 		if net != nil {
@@ -138,9 +142,13 @@ func (s *session) refreshCmd(sid int) tea.Cmd {
 		if fi, err := os.Stat(p.WorkingPath()); err == nil {
 			r.mtime = fi.ModTime()
 		}
+		if liveOn {
+			r.pair, r.catchup = catchupItems(p, caught)
+		}
 		if pr, err := p.PendingReload(); err == nil {
 			for _, c := range pr {
-				// czesc zmian przyszla na zywo - ale tylko, gdy Live mial ten set
+				// zmiany klipow MIDI, panoramy itp. wchodza do Live'a same (na
+				// zywo albo z wersji) - ale tylko, gdy Live ma ten set
 				if !liveOn || !liveSyncable(c) {
 					r.reload = append(r.reload, c)
 				}
@@ -195,6 +203,12 @@ func (s *session) handle(a *App, msg sessionMsg) (tea.Model, tea.Cmd) {
 			s.logf(lWarn, "Reload the set to get %d change(s) that can't come in live (e.g. %s)", len(m.reload), shortChange(m.reload[0].String()))
 		}
 		s.reload = m.reload
+		if m.pair != "" && m.pair != s.caught && s.liveOn() {
+			s.caught = m.pair
+			if len(m.catchup) > 0 {
+				s.live.Catchup(m.catchup)
+			}
+		}
 		saved := !s.mtime.IsZero() && !m.mtime.IsZero() && !m.mtime.Equal(s.mtime)
 		if !m.mtime.IsZero() {
 			s.mtime = m.mtime

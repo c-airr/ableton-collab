@@ -53,6 +53,7 @@ type LiveSync interface {
 	Status() live.Status
 	Resolve(key string, mine bool)
 	Recheck()
+	Catchup(items []live.Catch)
 	Close()
 }
 

@@ -129,6 +129,29 @@ func (e *Engine) Close() {
 	e.closeMu.Do(func() { close(e.stop) })
 }
 
+// Catchup: zmiany z zapisanej wersji, ktorych Live jeszcze nie ma (wersja
+// przyszla, a ich autor nie mial pracy na zywo). Nanoszone jak operacje, ale
+// scalone z tym, co jest w Live - niezapisana praca zostaje.
+func (e *Engine) Catchup(items []Catch) {
+	select {
+	case e.cmds <- func() {
+		for _, c := range items {
+			e.catchup(c)
+		}
+	}:
+	case <-e.stop:
+	}
+}
+
+func (e *Engine) catchup(c Catch) {
+	if !e.status.Matched || e.paused[c.Key] != nil {
+		return
+	}
+	if obj := mergeItem(c.Key, c.Base, c.Head, e.cur[c.Key]); obj != nil {
+		e.apply(c.Key, obj, "")
+	}
+}
+
 // Resolve: wybor w konflikcie na kluczu key (mine - zostaje moja wersja).
 func (e *Engine) Resolve(key string, mine bool) {
 	select {
@@ -219,13 +242,25 @@ func (e *Engine) onMsg(m Msg) {
 			return
 		}
 		delete(e.pending, m.ID)
+		who := p.from + "'s change"
+		if p.from == "" {
+			who = "A saved change"
+		}
 		if !m.OK {
-			e.note(Note{Kind: "reload", Text: fmt.Sprintf("%s's change to %s needs a reload: %s", p.from, Label(p.key, p.obj), m.Err)})
+			e.note(Note{Kind: "reload", Text: fmt.Sprintf("%s to %s needs a reload: %s", who, Label(p.key, p.obj), m.Err)})
 			return
 		}
-		h := Hash(p.obj)
-		e.cur[p.key], e.local[p.key], e.synced[p.key] = p.obj, h, h
-		e.note(Note{Kind: "log", Text: fmt.Sprintf("%s changed %s", p.from, Label(p.key, p.obj))})
+		obj := p.obj
+		if m.Obj != nil {
+			obj = m.Obj // stan po naniesieniu, odczytany z Live
+		}
+		h := Hash(obj)
+		e.cur[p.key], e.local[p.key], e.synced[p.key] = obj, h, h
+		if p.from == "" {
+			e.note(Note{Kind: "log", Text: "↓ Brought in saved changes to " + Label(p.key, obj)})
+		} else {
+			e.note(Note{Kind: "log", Text: fmt.Sprintf("%s changed %s", p.from, Label(p.key, obj))})
+		}
 	}
 }
 

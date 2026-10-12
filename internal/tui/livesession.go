@@ -178,29 +178,53 @@ func (s *session) reloadCmd(sid int) tea.Cmd {
 	}
 }
 
-// liveSyncable: zmiana, ktora przechodzi na zywo przez skrypt (nuty i
-// wlasciwosci klipu MIDI, mikser sciezki, tempo) - po pobraniu nie wymaga
-// przeladowania seta.
+// catchupItems: zmiany kluczy pracy na zywo miedzy wersja wczytana w Live a
+// head (przyszly w zapisanych wersjach innych). Liczone raz na pare wersji.
+func catchupItems(p *store.Project, caught string) (string, []live.Catch) {
+	head, loaded := p.Head(), p.Loaded()
+	if head == "" || head == loaded {
+		return "", nil
+	}
+	pair := loaded + ">" + head
+	if pair == caught {
+		return pair, nil
+	}
+	vs, err := p.Versions()
+	if err != nil || vs[head] == nil || vs[loaded] == nil {
+		return "", nil
+	}
+	a, err := p.LoadDoc(vs[loaded])
+	if err != nil {
+		return "", nil
+	}
+	b, err := p.LoadDoc(vs[head])
+	if err != nil {
+		return "", nil
+	}
+	return pair, live.CatchupItems(a, b)
+}
+
+// liveSyncable: zmiana, ktora wchodzi do otwartego Live'a bez przeladowania
+// (na zywo przez skrypt albo z wersji - live.SetItems): nuty, petla i nazwa
+// klipu MIDI, klip MIDI w slocie, panorama i wyciszenie sciezki, tempo.
+// Kolor klipu, glosnosc i sendy - przez Reload (plik ma inne jednostki niz API).
 func liveSyncable(c als.Change) bool {
 	p := "/" + strings.Join(c.Path, "/") + "/"
 	switch {
 	case strings.Contains(p, "/MidiClip"):
-		if !strings.Contains(p, "/MidiClip") {
-			return false
-		}
 		rest := p[strings.Index(p, "/MidiClip"):]
 		rest = rest[strings.Index(rest[1:], "/")+1:]
 		if rest == "/" { // caly klip dodany/usuniety (w slocie - skrypt to umie)
 			return strings.Contains(p, "/ClipSlot")
 		}
-		for _, ok := range []string{"/Notes/", "/Loop/", "/Name/", "/Color/"} {
+		for _, ok := range []string{"/Notes/", "/Loop/", "/Name/"} {
 			if strings.HasPrefix(rest, ok) {
 				return true
 			}
 		}
 		return false
 	case strings.Contains(p, "/Mixer/"):
-		for _, ok := range []string{"/Volume/", "/Pan/", "/Speaker/", "/Sends/", "/Tempo/"} {
+		for _, ok := range []string{"/Pan/", "/Speaker/", "/Tempo/"} {
 			if strings.Contains(p, ok) {
 				return true
 			}

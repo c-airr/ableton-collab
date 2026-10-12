@@ -19,6 +19,7 @@ type fakeLiveSync struct {
 	st       live.Status
 	resolved map[string]bool
 	rechecks int
+	caught   [][]live.Catch
 }
 
 // Kanal notatek jest zamkniety: komenda czekajaca na niego konczy sie od razu
@@ -33,6 +34,7 @@ func (f *fakeLiveSync) Notes() <-chan live.Note       { return f.notes }
 func (f *fakeLiveSync) Status() live.Status           { return f.st }
 func (f *fakeLiveSync) Resolve(key string, mine bool) { f.resolved[key] = mine }
 func (f *fakeLiveSync) Recheck()                      { f.rechecks++ }
+func (f *fakeLiveSync) Catchup(items []live.Catch)    { f.caught = append(f.caught, items) }
 func (f *fakeLiveSync) Close()                        {}
 
 // liveNote: notatka od silnika przechodzi przez Update jak w programie.
@@ -134,7 +136,7 @@ func TestLiveSyncable(t *testing.T) {
 	c := func(path ...string) als.Change { return als.Change{Kind: "modified", Path: path} }
 	yes := []als.Change{
 		c("Ableton", "LiveSet", "Tracks", "MidiTrack#16", "DeviceChain", "MainSequencer", "ClipSlotList", "ClipSlot#0", "ClipSlot", "Value", "MidiClip#0", "Notes", "KeyTracks", "60", "Notes", "6"),
-		c("Ableton", "LiveSet", "Tracks", "MidiTrack#16", "DeviceChain", "Mixer", "Volume", "Manual"),
+		c("Ableton", "LiveSet", "Tracks", "MidiTrack#16", "DeviceChain", "Mixer", "Pan", "Manual"),
 		c("Ableton", "LiveSet", "MainTrack", "DeviceChain", "Mixer", "Tempo", "Manual"),
 		c("Ableton", "LiveSet", "Tracks", "MidiTrack#16", "DeviceChain", "MainSequencer", "ClipSlotList", "ClipSlot#1", "ClipSlot", "Value", "MidiClip#0"),
 	}
@@ -142,6 +144,8 @@ func TestLiveSyncable(t *testing.T) {
 		c("Ableton", "LiveSet", "Tracks", "MidiTrack#16", "DeviceChain", "DeviceChain", "Devices", "PluginDevice#3"),
 		c("Ableton", "LiveSet", "Tracks", "AudioTrack#2", "DeviceChain", "MainSequencer", "ClipSlotList", "ClipSlot#0", "ClipSlot", "Value", "AudioClip#0", "WarpMarkers"),
 		c("Ableton", "LiveSet", "Tracks", "MidiTrack#9"),
+		c("Ableton", "LiveSet", "Tracks", "MidiTrack#16", "DeviceChain", "Mixer", "Volume", "Manual"),
+		c("Ableton", "LiveSet", "Tracks", "MidiTrack#16", "DeviceChain", "MainSequencer", "ClipSlotList", "ClipSlot#0", "ClipSlot", "Value", "MidiClip#0", "Color"),
 	}
 	for _, x := range yes {
 		if !liveSyncable(x) {
@@ -261,6 +265,15 @@ func TestAutoPullModes(t *testing.T) {
 			}
 			if !tc.fileTaken && !tc.st.Matched {
 				must(t, a, "new change(s) from others are in")
+			}
+			// Live ma ten set: zmiany z wersji ida do niego od razu, raz
+			a = tickApp(t, a)
+			a = tickApp(t, a)
+			if tc.st.Matched && (len(ls.caught) != 1 || len(ls.caught[0]) == 0) {
+				t.Fatalf("changes from the version not brought into Live: %v", ls.caught)
+			}
+			if !tc.st.Matched && len(ls.caught) != 0 {
+				t.Fatal("brought changes into a Live without this set")
 			}
 		})
 	}

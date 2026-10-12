@@ -267,6 +267,7 @@ try:
     send({"op": "apply", "key": "clip/0/s0", "obj": target, "id": 5})
     ap = recv("applied")
     assert ap["ok"], ap
+    assert ap["obj"]["name"] == "hh2" and len(ap["obj"]["notes"]) == 2, ap  # stan po naniesieniu
     clip = SONG.tracks[0].clip_slots[0].clip
     assert sorted((n.pitch, n.start_time) for n in clip.notes) == [(60, 0.0), (67, 2.0)]
     assert [n.note_id for n in clip.notes if n.pitch == 60] == [keep_id], "unchanged note got a new id"
