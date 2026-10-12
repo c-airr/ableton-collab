@@ -164,3 +164,22 @@ func TestSettingsToggles(t *testing.T) {
 	}
 	must(t, a, "Auto-save in Live: ON")
 }
+
+// Live ma inny set: wyrazny komunikat i przycisk Open in Live.
+func TestOpenInLive(t *testing.T) {
+	a, be, ls, _ := liveApp(t, Settings{AutoSync: true})
+	ls.st = live.Status{Connected: true, Detail: "Live has a different set open - open this session's set"}
+	a = liveNote(t, a, live.Note{Kind: "status"})
+	must(t, a, "Live has a different set open", "Open in Live")
+	a = press(t, a, "e")
+	if be.opened != a.ses.p.WorkingPath() {
+		t.Fatalf("opened %q", be.opened)
+	}
+	mustLog(t, a, "Opening")
+	// set otwarty - przycisk znika
+	ls.st = live.Status{Connected: true, Matched: true}
+	a = liveNote(t, a, live.Note{Kind: "status"})
+	if strings.Contains(view(a), "Open in Live") {
+		t.Fatal("Open in Live still shown with the right set open")
+	}
+}

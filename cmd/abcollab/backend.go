@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/c-airr/ableton-collab/als"
@@ -294,12 +296,37 @@ func (b *backend) SetLast(dir string) {
 
 // --- panel ----------------------------------------------------------------------------------
 
+// documentsDir: folder Dokumentow. Na Linuksie wg ustawien pulpitu
+// (~/.config/user-dirs.dirs) - po polsku to ~/Dokumenty, nie ~/Documents.
+func documentsDir(home string) string {
+	if runtime.GOOS == "linux" {
+		conf := os.Getenv("XDG_CONFIG_HOME")
+		if conf == "" {
+			conf = filepath.Join(home, ".config")
+		}
+		if data, err := os.ReadFile(filepath.Join(conf, "user-dirs.dirs")); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				v, ok := strings.CutPrefix(strings.TrimSpace(line), "XDG_DOCUMENTS_DIR=")
+				if !ok {
+					continue
+				}
+				v = strings.Trim(v, `"`)
+				v = strings.Replace(v, "$HOME", home, 1)
+				if filepath.IsAbs(v) && v != home {
+					return v
+				}
+			}
+		}
+	}
+	return filepath.Join(home, "Documents")
+}
+
 func defaultProjectsDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "."
 	}
-	return filepath.Join(home, "Documents", "Ableton", "abcollab")
+	return filepath.Join(documentsDir(home), "Ableton", "abcollab")
 }
 
 func browseFrom() string {
@@ -307,12 +334,41 @@ func browseFrom() string {
 	if err != nil {
 		return "."
 	}
-	for _, d := range []string{filepath.Join(home, "Documents", "Ableton"), filepath.Join(home, "Documents")} {
+	docs := documentsDir(home)
+	for _, d := range []string{filepath.Join(docs, "Ableton"), docs} {
 		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
 			return d
 		}
 	}
 	return home
+}
+
+// OpenInLive otwiera set w Live (skojarzenie .als w systemie; na Linuksie
+// launcher Live'a pod Wine z ableton-linux albo xdg-open).
+func (b *backend) OpenInLive(path string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", "", path)
+	case "darwin":
+		cmd = exec.Command("open", path)
+	default:
+		for _, c := range []string{"ableton-live", "xdg-open"} {
+			if p, err := exec.LookPath(c); err == nil {
+				cmd = exec.Command(p, path)
+				break
+			}
+		}
+	}
+	if cmd == nil {
+		return fmt.Errorf("can't start Live from here - open %s in Live yourself", path)
+	}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go cmd.Wait()
+	return nil
 }
 
 // installLive instaluje/aktualizuje skrypt AbletonCollab w Live (User

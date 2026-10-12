@@ -87,12 +87,14 @@ type fakeBackend struct {
 	live     LiveSync
 	settings Settings
 	saves    int
+	opened   string
 }
 
 func (b *fakeBackend) Live(p *store.Project) LiveSync { return b.live }
 func (b *fakeBackend) Settings() Settings             { return b.settings }
 func (b *fakeBackend) SetSettings(s Settings) error   { b.settings = s; return nil }
 func (b *fakeBackend) SaveInLive() (bool, error)      { b.saves++; return true, nil }
+func (b *fakeBackend) OpenInLive(path string) error   { b.opened = path; return nil }
 
 func (b *fakeBackend) DeviceID() string { return idGuest }
 func (b *fakeBackend) Rename(n string) error {

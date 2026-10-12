@@ -599,6 +599,8 @@ func (a App) status() (string, level) {
 		return "" + strings.ToUpper(s.busy[:1]) + s.busy[1:] + "...", lWarn
 	case len(s.liveQueue) > 0:
 		return fmt.Sprintf("Live conflict with %s - choose which version stays", s.liveQueue[0].From), lErr
+	case s.live != nil && s.liveSt.Connected && !s.liveSt.Matched:
+		return "Live has a different set open - press Open in Live (e) to open this session's set", lWarn
 	case s.err != nil:
 		return s.err.Error(), lErr
 	case s.lobbyErr != nil:

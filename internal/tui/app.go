@@ -37,6 +37,8 @@ type Backend interface {
 	SetSettings(Settings) error
 	// SaveInLive wysyla Ctrl+S do Live'a, jesli jest na wierzchu.
 	SaveInLive() (bool, error)
+	// OpenInLive otwiera set w Live.
+	OpenInLive(path string) error
 }
 
 // Settings: przelaczniki w Settings (pamietane miedzy uruchomieniami).
@@ -486,6 +488,9 @@ func (a App) buttons() []button {
 	if len(s.reload) > 0 {
 		bs = append(bs, button{id: "reload", label: "Reload set", key: "u"})
 	}
+	if !s.liveOn() {
+		bs = append(bs, button{id: "openlive", label: "Open in Live", key: "e"})
+	}
 	// przyciski zalezne od zaznaczenia
 	switch {
 	case a.focus == fFiles && s.tree.selectedDeletable(s.p) != "":
@@ -540,6 +545,14 @@ func (a App) press(id string) (tea.Model, tea.Cmd) {
 	switch id {
 	case "invite":
 		a.dlg = newInviteDialog(&a)
+		return a, nil
+	case "openlive":
+		path := s.p.WorkingPath()
+		if err := a.be.OpenInLive(path); err != nil {
+			a.say(lErr, err.Error())
+			return a, nil
+		}
+		s.logf(lInfo, "Opening %s in Live: %s", s.p.SetName(), path)
 		return a, nil
 	case "reload":
 		a.dlg = newConfirmDialog("Reload "+s.p.SetName()+"?",
