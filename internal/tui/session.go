@@ -128,7 +128,7 @@ func (m eventsMsg) sessionID() int  { return m.sid }
 func (m actionMsg) sessionID() int  { return m.sid }
 
 func (s *session) refreshCmd(sid int) tea.Cmd {
-	p, net, dir := s.p, s.net, s.p.Dir
+	p, net, dir, liveOn := s.p, s.net, s.p.Dir, s.liveOn()
 	return func() tea.Msg {
 		r := refreshMsg{sid: sid}
 		if net != nil {
@@ -140,7 +140,8 @@ func (s *session) refreshCmd(sid int) tea.Cmd {
 		}
 		if pr, err := p.PendingReload(); err == nil {
 			for _, c := range pr {
-				if !liveSyncable(c) {
+				// czesc zmian przyszla na zywo - ale tylko, gdy Live mial ten set
+				if !liveOn || !liveSyncable(c) {
 					r.reload = append(r.reload, c)
 				}
 			}

@@ -624,6 +624,9 @@ func (a App) status() (string, level) {
 		if s.st.Head == nil {
 			return "You don't have the set yet - press Get changes", lWarn
 		}
+		if len(s.reload) > 0 && !s.liveOn() {
+			return fmt.Sprintf("%d new change(s) from others are in - press Open in Live (e) to load them", len(s.reload)), lWarn
+		}
 		if len(s.reload) > 0 {
 			return fmt.Sprintf("Reload the set to see %d change(s) from others - press Reload set", len(s.reload)), lWarn
 		}

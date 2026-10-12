@@ -285,7 +285,7 @@ func (b *backend) Live(p *store.Project) tui.LiveSync {
 		return als.TrackNames(doc)
 	}
 	cl := live.Dial(live.Addr, b.token)
-	return liveSync{Engine: live.Start(cl, filepath.Join(p.Dir, store.Dir), p.Me.ID, names, tracks), cl: cl}
+	return liveSync{Engine: live.Start(cl, filepath.Join(p.Dir, store.Dir), p.Me.ID, p.Meta.ID, names, tracks), cl: cl}
 }
 
 func (b *backend) SetLast(dir string) {

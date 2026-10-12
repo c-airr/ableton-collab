@@ -136,6 +136,13 @@ class Song(Observable):
         self._tempo = 120.0
         self.tracks = [Track("Hats"), Track("Bass")]
         self.scenes = []
+        self._data = {}
+
+    def get_data(self, key, default):
+        return self._data.get(key, default)
+
+    def set_data(self, key, value):
+        self._data[key] = value
 
     @property
     def tempo(self):
@@ -235,9 +242,13 @@ try:
         raise AssertionError("no %s" % want)
 
     send({"op": "hello", "token": "tok"})
-    assert recv("hello")["tracks"] == ["Hats", "Bass"]
+    hello = recv("hello")
+    assert hello["tracks"] == ["Hats", "Bass"] and hello["session"] == "", hello
+    send({"op": "mark", "session": "SESJA1"})
+    assert recv("marked")["ok"] and SONG.get_data("abcollab.session", "") == "SESJA1"
     send({"op": "state", "id": 2})
     st = recv("state")
+    assert st["session"] == "SESJA1", st.get("session")
     assert st["items"]["clip/0/s0"]["notes"] == [[60, 0.0, 0.25, 100.0, False, 1.0, 0.0, 64.0]], st["items"]
     assert st["items"]["tempo"] == {"bpm": 120.0}
 

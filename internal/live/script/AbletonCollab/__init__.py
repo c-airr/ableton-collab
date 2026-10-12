@@ -25,7 +25,8 @@ import Live
 from _Framework.ControlSurface import ControlSurface
 
 PORT = 9879
-VERSION = 1
+VERSION = 2
+SESSION_KEY = "abcollab.session"
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEBOUNCE = 0.3
 
@@ -80,6 +81,14 @@ class AbletonCollab(ControlSurface):
             pass
         self._drop_client()
         ControlSurface.disconnect(self)
+
+    def _session(self):
+        # znacznik sesji zapisany w secie (Song.get_data) - rozpoznanie setu
+        # niezalezne od nazw sciezek
+        try:
+            return str(self._song.get_data(SESSION_KEY, "") or "")
+        except Exception:
+            return ""
 
     def _read_token(self):
         try:
@@ -349,7 +358,8 @@ class AbletonCollab(ControlSurface):
                     self._send({"t": "error", "err": "bad token"})
                     self._drop_client()
                     continue
-                self._send({"t": "hello", "v": VERSION, "tracks": [t.name for t in self._song.tracks]})
+                self._send({"t": "hello", "v": VERSION, "tracks": [t.name for t in self._song.tracks],
+                            "session": self._session()})
             elif not self._authed:
                 continue
             elif op == "state":
@@ -361,7 +371,14 @@ class AbletonCollab(ControlSurface):
                         continue
                     items[key] = obj
                     self._last[key] = canon(obj)
-                self._send({"t": "state", "id": msg.get("id"), "tracks": [t.name for t in self._song.tracks], "items": items})
+                self._send({"t": "state", "id": msg.get("id"), "tracks": [t.name for t in self._song.tracks],
+                            "session": self._session(), "items": items})
+            elif op == "mark":
+                try:
+                    self._song.set_data(SESSION_KEY, str(msg.get("session", "")))
+                    self._send({"t": "marked", "id": msg.get("id"), "ok": True})
+                except Exception as e:
+                    self._send({"t": "marked", "id": msg.get("id"), "ok": False, "err": str(e)})
             elif op == "apply":
                 key = msg.get("key")
                 try:

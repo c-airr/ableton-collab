@@ -51,6 +51,7 @@ type Engine struct {
 	cl      *Client
 	root    string // .abcollab sesji
 	me      string // ID urzadzenia (store)
+	session string // ID sesji (znacznik w secie Live'a)
 	names   func(dev string) string
 	tracks  func() []string // sciezki seta sesji (sprawdzenie, czy w Live jest ten set)
 	notes   chan Note
@@ -86,9 +87,10 @@ type pendingApply struct {
 	from string
 }
 
-// Start: silnik dla sesji w root (.abcollab). me - moje ID w store.
-func Start(cl *Client, root, me string, names func(string) string, tracks func() []string) *Engine {
-	e := &Engine{cl: cl, root: root, me: me, names: names, tracks: tracks,
+// Start: silnik dla sesji w root (.abcollab). me - moje ID w store, session -
+// ID sesji (zapisywany w secie Live'a, zeby rozpoznac go niezaleznie od sciezek).
+func Start(cl *Client, root, me, session string, names func(string) string, tracks func() []string) *Engine {
+	e := &Engine{cl: cl, root: root, me: me, session: session, names: names, tracks: tracks,
 		notes: make(chan Note, 256), cmds: make(chan func(), 16), stop: make(chan struct{}),
 		local: map[string]string{}, synced: map[string]string{}, cur: map[string]Obj{},
 		paused: map[string]*conflict{}, chosen: map[string][]string{}, seen: map[string]int{}, pending: map[int]pendingApply{}}
@@ -179,10 +181,17 @@ func (e *Engine) onMsg(m Msg) {
 	case "error":
 		e.setStatus(Status{Detail: "Live: " + m.Err})
 	case "state":
-		want := e.tracks()
-		if !sameTracks(want, m.Tracks) {
-			e.setStatus(Status{Connected: true, Detail: "Live has a different set open - open this session's set"})
-			return
+		// Live uruchamia skrypt od nowa przy kazdym otwarciu setu, wiec set
+		// sprawdzamy raz na polaczenie - dodanie sciezki niczego nie blokuje.
+		if !e.status.Matched {
+			marked := e.session != "" && m.Session == e.session
+			if !marked && !sameTracks(e.tracks(), m.Tracks) {
+				e.setStatus(Status{Connected: true, Detail: "Live has a different set open - open this session's set"})
+				return
+			}
+			if !marked && e.session != "" {
+				e.cl.Send(map[string]any{"op": "mark", "session": e.session})
+			}
 		}
 		for k, o := range m.Items {
 			h := Hash(o)
@@ -191,7 +200,9 @@ func (e *Engine) onMsg(m Msg) {
 				e.synced[k] = h
 			}
 		}
-		e.setStatus(Status{Connected: true, Matched: true})
+		if !e.status.Matched {
+			e.setStatus(Status{Connected: true, Matched: true})
+		}
 	case "structure":
 		if e.status.Matched {
 			e.note(Note{Kind: "structure"})

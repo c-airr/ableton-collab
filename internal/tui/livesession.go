@@ -81,13 +81,15 @@ func (s *session) auto(a *App, saved bool) tea.Cmd {
 	if saved && set.AutoSync {
 		s.dirty = false
 		s.busy = "saving"
-		return s.autoSaveCmd(a.sid, s.liveOn())
+		return s.autoSaveCmd(a.sid, !s.fileFree())
 	}
-	if set.AutoSync && s.liveOn() && s.st != nil {
+	// nowe wersje innych - zawsze same, bez Get changes
+	if set.AutoSync && s.st != nil {
 		for _, ps := range s.st.Peers {
 			if ps.Relation == store.RelAhead || ps.Relation == store.RelDiverged {
+				s.logf(lFile, "↓ New version from %s - getting it", ps.Device.Name)
 				s.busy = "getting changes"
-				return s.pullCmd(a.sid, nil, true)
+				return s.pullCmd(a.sid, nil, !s.fileFree())
 			}
 		}
 	}
@@ -101,6 +103,14 @@ func (s *session) auto(a *App, saved bool) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// fileFree: plik seta mozna podmienic - Live jest polaczony i ma otwarty
+// INNY set. Gdy Live ma ten set (praca na zywo) albo nie wiemy, co ma
+// otwarte (skrypt nie odpowiada), pliku nie ruszamy: zmiany wchodza na zywo
+// albo czekaja na Open in Live / Reload.
+func (s *session) fileFree() bool {
+	return s.live != nil && s.liveSt.Connected && !s.liveSt.Matched
 }
 
 // autoSaveCmd: Live zapisal set - nowa wersja i od razu zmiany innych.
@@ -121,7 +131,7 @@ func (s *session) autoSaveCmd(sid int, liveMode bool) tea.Cmd {
 		}
 		var lines []logLine
 		if r.Committed != nil {
-			lines = append(lines, logLine{at, lOK, fmt.Sprintf("Live saved the set - shared as version %s", r.Committed.Short())})
+			lines = append(lines, logLine{at, lOK, fmt.Sprintf("↑ Live saved the set - sent as version %s", r.Committed.Short())})
 		}
 		r.Committed = nil
 		if r.WorkingChanged() || len(r.Conflicts) > 0 || len(r.Incomplete) > 0 {

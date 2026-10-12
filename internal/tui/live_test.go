@@ -123,7 +123,7 @@ func TestAutoSyncWhenLiveSaves(t *testing.T) {
 	future := time.Now().Add(time.Second)
 	os.Chtimes(path, future, future)
 	a = tickApp(t, a)
-	mustLog(t, a, "Live saved the set - shared as version")
+	mustLog(t, a, "Live saved the set - sent as version")
 	if ls.rechecks == 0 {
 		t.Error("no recheck after save")
 	}
@@ -220,4 +220,48 @@ func TestOpenInLiveGetsLatest(t *testing.T) {
 		t.Fatal("opened an old set - the newer version wasn't pulled first")
 	}
 	mustLog(t, a, "Got the latest version before opening")
+}
+
+// Nowa wersja kolegi przychodzi sama (bez Get changes). Plik seta jest
+// podmieniany tylko wtedy, gdy Live ma otwarty inny set.
+func TestAutoPullModes(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		st        live.Status
+		fileTaken bool // plik seta podmieniony
+	}{
+		{"live on - changes come live", live.Status{Connected: true, Matched: true}, false},
+		{"other set open - file updated", live.Status{Connected: true, Detail: "different set"}, true},
+		{"Live not connected - file untouched", live.Status{Detail: "not connected"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, ls, dir := liveApp(t, Settings{AutoSync: true})
+			ls.st = tc.st
+			a = liveNote(t, a, live.Note{Kind: "status"})
+			other := t.TempDir()
+			copyDir(t, filepath.Join(dir, store.Dir), filepath.Join(other, store.Dir))
+			kp, _ := store.Open(other, store.NewDevice("Kolega"))
+			kp.Pull(nil)
+			newer := testdata(t, "base.als")
+			os.WriteFile(kp.WorkingPath(), newer, 0o644)
+			if v, err := kp.Commit(); err != nil || v == nil {
+				t.Fatalf("%v %v", v, err)
+			}
+			copyDir(t, filepath.Join(other, store.Dir, "devices", kp.Me.ID), filepath.Join(dir, store.Dir, "devices", kp.Me.ID))
+			before, _ := os.ReadFile(a.ses.p.WorkingPath())
+			a = tickApp(t, a) // odswiezenie widzi nowa wersje
+			a = tickApp(t, a) // auto pobranie
+			mustLog(t, a, "New version from Kolega - getting it")
+			if a.ses.st == nil || a.ses.st.Peers[0].Relation == store.RelAhead {
+				t.Fatal("not pulled automatically")
+			}
+			now, _ := os.ReadFile(a.ses.p.WorkingPath())
+			if taken := !bytes.Equal(now, before); taken != tc.fileTaken {
+				t.Fatalf("set file replaced=%v, want %v", taken, tc.fileTaken)
+			}
+			if !tc.fileTaken && !tc.st.Matched {
+				must(t, a, "new change(s) from others are in")
+			}
+		})
+	}
 }

@@ -27,14 +27,15 @@ func Hash(o Obj) string {
 
 // Msg: wiadomosc od skryptu.
 type Msg struct {
-	T      string         `json:"t"` // hello, state, change, structure, applied, pong, error
-	ID     int            `json:"id"`
-	Key    string         `json:"key"`
-	Obj    Obj            `json:"obj"`
-	Tracks []string       `json:"tracks"`
-	Items  map[string]Obj `json:"items"`
-	OK     bool           `json:"ok"`
-	Err    string         `json:"err"`
+	T       string         `json:"t"` // hello, state, change, structure, applied, pong, error
+	ID      int            `json:"id"`
+	Key     string         `json:"key"`
+	Obj     Obj            `json:"obj"`
+	Tracks  []string       `json:"tracks"`
+	Items   map[string]Obj `json:"items"`
+	OK      bool           `json:"ok"`
+	Err     string         `json:"err"`
+	Session string         `json:"session"` // znacznik sesji zapisany w secie
 }
 
 // Client: polaczenie ze skryptem w Live (laczy sie ponownie samo, np. gdy

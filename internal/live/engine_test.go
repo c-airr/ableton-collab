@@ -13,13 +13,14 @@ import (
 
 // fakeLive: atrapa skryptu AbletonCollab - stan w pamieci, ten sam protokol.
 type fakeLive struct {
-	t      *testing.T
-	ln     net.Listener
-	mu     sync.Mutex
-	conn   net.Conn
-	tracks []string
-	items  map[string]Obj
-	token  string
+	t       *testing.T
+	ln      net.Listener
+	mu      sync.Mutex
+	conn    net.Conn
+	tracks  []string
+	items   map[string]Obj
+	token   string
+	session string // znacznik sesji w "secie"
 }
 
 func newFakeLive(t *testing.T, tracks []string, items map[string]Obj) *fakeLive {
@@ -60,7 +61,11 @@ func (f *fakeLive) serve() {
 			json.Unmarshal(sc.Bytes(), &m)
 			switch m["op"] {
 			case "hello":
-				f.send(map[string]any{"t": "hello", "tracks": f.tracks})
+				f.send(map[string]any{"t": "hello", "tracks": f.tracks, "session": f.session})
+			case "mark":
+				f.mu.Lock()
+				f.session = m["session"].(string)
+				f.mu.Unlock()
 			case "state":
 				f.mu.Lock()
 				items := map[string]Obj{}
@@ -68,7 +73,10 @@ func (f *fakeLive) serve() {
 					items[k] = v
 				}
 				f.mu.Unlock()
-				f.send(map[string]any{"t": "state", "id": m["id"], "tracks": f.tracks, "items": items})
+				f.mu.Lock()
+				tracks, sess := f.tracks, f.session
+				f.mu.Unlock()
+				f.send(map[string]any{"t": "state", "id": m["id"], "tracks": tracks, "items": items, "session": sess})
 			case "apply":
 				key := m["key"].(string)
 				obj := Obj(m["obj"].(map[string]any))
@@ -115,7 +123,7 @@ func pair(t *testing.T) (*side, *side, string) {
 		os.MkdirAll(filepath.Join(root, "devices", dev), 0o755)
 		fl := newFakeLive(t, tracks, map[string]Obj{"clip/0/s0": clip(60), "tempo": {"bpm": 120.0}})
 		cl := Dial(fl.addr(), "tok")
-		e := Start(cl, root, dev, func(d string) string { return "user-" + d }, func() []string { return tracks })
+		e := Start(cl, root, dev, "", func(d string) string { return "user-" + d }, func() []string { return tracks })
 		t.Cleanup(func() { e.Close(); cl.Close() })
 		return &side{fl, e}
 	}
@@ -170,8 +178,8 @@ func TestLiveConcurrentEditAsks(t *testing.T) {
 	defer ca.Close()
 	defer cb.Close()
 	names := func(d string) string { return "user-" + d }
-	ea := Start(ca, root, "AAA", names, func() []string { return tracks })
-	eb := Start(cb, root, "BBB", names, func() []string { return tracks })
+	ea := Start(ca, root, "AAA", "", names, func() []string { return tracks })
+	eb := Start(cb, root, "BBB", "", names, func() []string { return tracks })
 	defer ea.Close()
 	defer eb.Close()
 	aConf, bConf := drain(ea, "conflict"), drain(eb, "conflict")
@@ -208,8 +216,8 @@ func TestLiveBothResolveDifferently(t *testing.T) {
 	defer ca.Close()
 	defer cb.Close()
 	names := func(d string) string { return d }
-	ea := Start(ca, root, "AAA", names, func() []string { return tracks })
-	eb := Start(cb, root, "BBB", names, func() []string { return tracks })
+	ea := Start(ca, root, "AAA", "", names, func() []string { return tracks })
+	eb := Start(cb, root, "BBB", "", names, func() []string { return tracks })
 	defer ea.Close()
 	defer eb.Close()
 	aConf, bConf := drain(ea, "conflict"), drain(eb, "conflict")
@@ -231,7 +239,7 @@ func TestLiveDifferentSetOpen(t *testing.T) {
 	fl := newFakeLive(t, []string{"Some", "Other", "Set"}, map[string]Obj{})
 	cl := Dial(fl.addr(), "tok")
 	defer cl.Close()
-	e := Start(cl, root, "AAA", func(d string) string { return d }, func() []string { return []string{"Hats"} })
+	e := Start(cl, root, "AAA", "", func(d string) string { return d }, func() []string { return []string{"Hats"} })
 	defer e.Close()
 	waitFor(t, "status", func() bool { return e.Status().Connected })
 	if st := e.Status(); st.Matched || st.Detail == "" {
@@ -253,5 +261,59 @@ func TestLabel(t *testing.T) {
 	}
 	if l := Label("tempo", Obj{"bpm": 128.0}); l != "tempo (128 BPM)" {
 		t.Error(l)
+	}
+}
+
+// Po rozpoznaniu setu dodanie sciezki (inne nazwy niz w pliku) nie wstrzymuje
+// pracy na zywo, a set dostaje znacznik sesji.
+func TestLiveStructureKeepsMatch(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".abcollab")
+	os.MkdirAll(filepath.Join(root, "devices", "AAA"), 0o755)
+	fl := newFakeLive(t, []string{"Hats"}, map[string]Obj{"clip/0/s0": clip(60)})
+	cl := Dial(fl.addr(), "tok")
+	defer cl.Close()
+	e := Start(cl, root, "AAA", "SESJA1", func(d string) string { return d }, func() []string { return []string{"Hats"} })
+	defer e.Close()
+	waitFor(t, "matched", func() bool { return e.Status().Matched })
+	waitFor(t, "set marked", func() bool { fl.mu.Lock(); defer fl.mu.Unlock(); return fl.session == "SESJA1" })
+	// uzytkownik dodaje sciezke - plik seta jeszcze jej nie ma
+	fl.mu.Lock()
+	fl.tracks = []string{"Hats", "5-MIDI"}
+	fl.mu.Unlock()
+	fl.send(map[string]any{"t": "structure"})
+	time.Sleep(300 * time.Millisecond)
+	if !e.Status().Matched {
+		t.Fatal("adding a track stopped live sync")
+	}
+	fl.edit("clip/0/s0", clip(60, 64))
+	waitFor(t, "change still sent", func() bool {
+		ents, _ := os.ReadDir(filepath.Join(root, "devices", "AAA", "live"))
+		return len(ents) == 1
+	})
+}
+
+// Set ze znacznikiem tej sesji jest rozpoznany nawet przy innych sciezkach
+// (np. po ponownym polaczeniu z niezapisana nowa sciezka); inny set nie.
+func TestLiveSessionMarker(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".abcollab")
+	os.MkdirAll(filepath.Join(root, "devices", "AAA"), 0o755)
+	fl := newFakeLive(t, []string{"Hats", "5-MIDI"}, map[string]Obj{})
+	fl.session = "SESJA1"
+	cl := Dial(fl.addr(), "tok")
+	defer cl.Close()
+	e := Start(cl, root, "AAA", "SESJA1", func(d string) string { return d }, func() []string { return []string{"Hats"} })
+	defer e.Close()
+	waitFor(t, "matched by marker", func() bool { return e.Status().Matched })
+
+	other := newFakeLive(t, []string{"Hats", "5-MIDI"}, map[string]Obj{})
+	other.session = "INNA"
+	cl2 := Dial(other.addr(), "tok")
+	defer cl2.Close()
+	e2 := Start(cl2, root, "AAA", "SESJA1", func(d string) string { return d }, func() []string { return []string{"Hats"} })
+	defer e2.Close()
+	waitFor(t, "status", func() bool { return e2.Status().Connected })
+	time.Sleep(200 * time.Millisecond)
+	if e2.Status().Matched {
+		t.Fatal("a set from another session was accepted")
 	}
 }
