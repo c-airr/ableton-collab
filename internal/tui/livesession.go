@@ -131,6 +131,32 @@ func (s *session) autoSaveCmd(sid int, liveMode bool) tea.Cmd {
 	}
 }
 
+// openInLiveCmd: najpierw najnowsza wersja do pliku (Live jeszcze go nie ma
+// otwartego, a zmiany z czasu, gdy byl zamkniety, nie przyszly na zywo), potem
+// otwarcie seta w Live.
+func (s *session) openInLiveCmd(sid int, be Backend) tea.Cmd {
+	p, now := s.p, s.now
+	return func() tea.Msg {
+		at := now()
+		var lines []logLine
+		r, err := p.Pull(nil)
+		if err != nil {
+			return actionMsg{sid: sid, err: err}
+		}
+		if r.WorkingChanged() {
+			lines = append(lines, logLine{at, lOK, "Got the latest version before opening"})
+		}
+		if len(r.Conflicts) > 0 {
+			return actionMsg{sid: sid, pull: r, lines: pullLines(p, r, at)}
+		}
+		if err := be.OpenInLive(p.WorkingPath()); err != nil {
+			return actionMsg{sid: sid, lines: lines, err: err}
+		}
+		lines = append(lines, logLine{at, lInfo, "Opening " + p.SetName() + " in Live: " + p.WorkingPath()})
+		return actionMsg{sid: sid, lines: lines}
+	}
+}
+
 func (s *session) reloadCmd(sid int) tea.Cmd {
 	p, now := s.p, s.now
 	return func() tea.Msg {

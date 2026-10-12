@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -175,6 +177,9 @@ func TestOpenInLive(t *testing.T) {
 	if be.opened != a.ses.p.WorkingPath() {
 		t.Fatalf("opened %q", be.opened)
 	}
+	if be.opened == "" {
+		t.Fatalf("opened %q", be.opened)
+	}
 	mustLog(t, a, "Opening")
 	// set otwarty - przycisk znika
 	ls.st = live.Status{Connected: true, Matched: true}
@@ -182,4 +187,37 @@ func TestOpenInLive(t *testing.T) {
 	if strings.Contains(view(a), "Open in Live") {
 		t.Fatal("Open in Live still shown with the right set open")
 	}
+}
+
+// Open in Live najpierw pobiera nowsza wersje kolegi - inaczej Live otworzylby
+// stary plik, a zmiany sprzed polaczenia nie przyszlyby juz na zywo.
+func TestOpenInLiveGetsLatest(t *testing.T) {
+	a, be, ls, dir := liveApp(t, Settings{AutoSync: true})
+	// kolega w swojej kopii zapisuje nowa wersje
+	other := t.TempDir()
+	copyDir(t, filepath.Join(dir, store.Dir), filepath.Join(other, store.Dir))
+	kp, err := store.Open(other, store.NewDevice("Kolega"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kp.Pull(nil); err != nil {
+		t.Fatal(err)
+	}
+	newer := testdata(t, "base.als")
+	os.WriteFile(kp.WorkingPath(), newer, 0o644)
+	if v, err := kp.Commit(); err != nil || v == nil {
+		t.Fatalf("%v %v", v, err)
+	}
+	copyDir(t, filepath.Join(other, store.Dir, "devices", kp.Me.ID), filepath.Join(dir, store.Dir, "devices", kp.Me.ID))
+
+	ls.st = live.Status{Connected: true, Detail: "Live has a different set open"}
+	a = liveNote(t, a, live.Note{Kind: "status"})
+	a = press(t, a, "e")
+	if be.opened == "" {
+		t.Fatal("not opened")
+	}
+	if got, _ := os.ReadFile(a.ses.p.WorkingPath()); !bytes.Equal(got, newer) {
+		t.Fatal("opened an old set - the newer version wasn't pulled first")
+	}
+	mustLog(t, a, "Got the latest version before opening")
 }

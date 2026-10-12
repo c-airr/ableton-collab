@@ -547,13 +547,12 @@ func (a App) press(id string) (tea.Model, tea.Cmd) {
 		a.dlg = newInviteDialog(&a)
 		return a, nil
 	case "openlive":
-		path := s.p.WorkingPath()
-		if err := a.be.OpenInLive(path); err != nil {
-			a.say(lErr, err.Error())
+		if s.busy != "" && s.busy != refreshing {
+			a.say(lWarn, "Wait - "+s.busy)
 			return a, nil
 		}
-		s.logf(lInfo, "Opening %s in Live: %s", s.p.SetName(), path)
-		return a, nil
+		s.busy = "getting the latest version"
+		return a, s.openInLiveCmd(a.sid, a.be)
 	case "reload":
 		a.dlg = newConfirmDialog("Reload "+s.p.SetName()+"?",
 			[]string{"The set file gets the latest version with everyone's changes. Save in Live first if you changed something, then reload it in Live: File > Open Recent > " + s.p.SetName() + " (don't save the old one)."},
