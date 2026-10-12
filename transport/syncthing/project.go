@@ -105,12 +105,13 @@ func cleanName(s, def string) string {
 // nadpisywalby sobie nawzajem sety i tworzyl pliki sync-conflict.
 // Kolejnosc ma znaczenie (wygrywa pierwszy pasujacy wzorzec): wersje w
 // .abcollab/ tez maja koncowke .als, wiec sa wlaczone przed "*.als".
+// "Ableton Project Info" MUSI isc do innych: bez niego Live nie uznaje
+// folderu za projekt i przy zapisie zaklada nowy w srodku ("X Project/X Project").
 const ignores = `// abcollab: do not edit - rewritten on every start
 *.tmp
 !/.abcollab
 *.als
 Backup
-Ableton Project Info
 (?i)desktop.ini
 (?i)thumbs.db
 .DS_Store

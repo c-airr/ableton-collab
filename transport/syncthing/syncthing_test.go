@@ -192,6 +192,13 @@ func TestPairing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(hostDir, "inny Project", "inny.als")); err == nil {
 		t.Error("set z podfolderu przeszedl przez Syncthinga")
 	}
+	// folder projektu Live'a musi zostac projektem (inaczej Live zaklada nowy w srodku)
+	os.MkdirAll(filepath.Join(guestDir, "inny Project", "Ableton Project Info"), 0o755)
+	os.WriteFile(filepath.Join(guestDir, "inny Project", "Ableton Project Info", "AProject.ico"), []byte("ico"), 0o644)
+	waitFor(t, "Ableton Project Info u hosta", func() bool {
+		_, err := os.Stat(filepath.Join(hostDir, "inny Project", "Ableton Project Info", "AProject.ico"))
+		return err == nil
+	})
 
 	// log: u hosta "received", u goscia "sending"
 	var he, ge []Event
