@@ -45,10 +45,18 @@
 
         Expand-Archive -Path (Join-Path $tmp $asset) -DestinationPath (Join-Path $tmp 'x') -Force
         New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        $exe = Join-Path $dest 'abcollab.exe'
+        $old = Join-Path $dest 'abcollab.old.exe'
+        Remove-Item -Force -Path $old -ErrorAction SilentlyContinue
+        # dzialajacego .exe nie da sie nadpisac, ale da sie go przemianowac -
+        # otwarty abcollab dziala dalej, nastepne uruchomienie bierze nowa wersje
+        if (Test-Path $exe) {
+            try { Move-Item -Force -Path $exe -Destination $old } catch {}
+        }
         try {
-            Copy-Item -Path (Join-Path $tmp 'x\abcollab.exe') -Destination (Join-Path $dest 'abcollab.exe') -Force
+            Copy-Item -Path (Join-Path $tmp 'x\abcollab.exe') -Destination $exe -Force
         } catch {
-            throw "can't replace $dest\abcollab.exe - close abcollab and try again"
+            throw "can't replace $exe - close abcollab and try again"
         }
     } finally {
         Remove-Item -Recurse -Force -Path $tmp -ErrorAction SilentlyContinue
