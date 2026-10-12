@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -352,7 +353,9 @@ func TestHostExistingSet(t *testing.T) {
 	be := &fakeBackend{t: t, me: store.NewDevice("Ja"), net: &fakeNet{}}
 	a := newApp(t, be, Options{BrowseFrom: filepath.Dir(dir)})
 	a = press(t, a, "h")
-	must(t, a, "Host a session", "beat"+sep)
+	must(t, a, "Host a session", "New folder", "Existing folder")
+	a = press(t, a, "down", "enter")
+	must(t, a, "Pick the folder with your project", "beat"+sep)
 	a = press(t, a, "tab") // wejdz w podpowiedz "beat"
 	if a.dlg.(*hostDialog).path.value != dir+sep {
 		t.Fatalf("path %q", a.dlg.(*hostDialog).path.value)
@@ -369,10 +372,14 @@ func TestHostWaitsForLive(t *testing.T) {
 	root := t.TempDir()
 	be := &fakeBackend{t: t, me: store.NewDevice("Ja"), net: &fakeNet{}}
 	a := newApp(t, be, Options{BrowseFrom: root})
-	a = press(t, a, "h", "nowa sesja", "enter") // nie istnieje - zostanie zalozony
+	a = press(t, a, "h", "enter") // New folder - pole ma juz "<start>/my session"
+	if v := a.dlg.(*hostDialog).path.Path(); v != filepath.Join(root, "my session") {
+		t.Fatalf("new folder prefilled with %q", v)
+	}
+	a = press(t, a, "enter") // nie istnieje - zostanie zalozony
 	dump(t, a)
 	must(t, a, "Save your project from Live", "Save Live Set As", "waiting for an .als")
-	dir := filepath.Join(root, "nowa sesja")
+	dir := filepath.Join(root, "my session")
 	os.MkdirAll(filepath.Join(dir, "x Project"), 0o755)
 	os.WriteFile(filepath.Join(dir, "x Project", "x.als"), tinySet()[:12], 0o644) // Live jeszcze zapisuje
 	a = tickApp(t, a)
@@ -390,7 +397,7 @@ func TestHostForbiddenFolder(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	be := &fakeBackend{t: t, me: store.NewDevice("Ja"), net: &fakeNet{}}
 	a := newApp(t, be, Options{BrowseFrom: home})
-	a = press(t, a, "h", "enter")
+	a = press(t, a, "h", "down", "enter", "enter")
 	must(t, a, "you can't share this folder")
 }
 
@@ -618,5 +625,58 @@ func mustLog(t *testing.T, a App, want ...string) {
 		if !strings.Contains(joined, w) {
 			t.Fatalf("no %q in log:\n%s", w, joined)
 		}
+	}
+}
+
+// Wklejona pelna sciezka zastepuje zawartosc pola (wczesniej doklejala sie
+// do "<Dokumenty>\Ableton\" i mkdir konczyl sie bledem), smieci z wklejania
+// sa wycinane.
+func TestPastePathReplaces(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "beat")
+	os.MkdirAll(target, 0o755)
+	p := newPathInput(filepath.Join(root, "start"))
+	p.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("\x1b[200~\"" + target + "\"\r\n\x00"), Paste: true})
+	if p.Path() != target {
+		t.Fatalf("pasted path: %q", p.Path())
+	}
+	// pisanie po literze dalej dokleja
+	p.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if !strings.HasSuffix(p.value, "x") || !strings.HasPrefix(p.value, target) {
+		t.Fatalf("typing: %q", p.value)
+	}
+	if runtime.GOOS == "windows" {
+		glued := &pathInput{cur: -1}
+		glued.value = `C:\Docs\Ableton\` + target
+		if glued.Path() != target {
+			t.Fatalf("glued path: %q", glued.Path())
+		}
+		if PathProblem(`C:\a\b?c`) == "" || PathProblem(target) != "" {
+			t.Fatal("PathProblem")
+		}
+	}
+}
+
+func TestHostNewFolderMustBeEmpty(t *testing.T) {
+	root := t.TempDir()
+	full := filepath.Join(root, "full")
+	os.MkdirAll(full, 0o755)
+	os.WriteFile(filepath.Join(full, "x.txt"), []byte("x"), 0o644)
+	be := &fakeBackend{t: t, me: store.NewDevice("Ja"), net: &fakeNet{}}
+	a := newApp(t, be, Options{BrowseFrom: root})
+	a = press(t, a, "h", "enter", "ctrl+u", full, "enter")
+	must(t, a, "already has files")
+}
+
+func TestHostExistingNeedsSet(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "samples only"), 0o755)
+	os.WriteFile(filepath.Join(root, "samples only", "kick.wav"), []byte("x"), 0o644)
+	be := &fakeBackend{t: t, me: store.NewDevice("Ja"), net: &fakeNet{}}
+	a := newApp(t, be, Options{BrowseFrom: root})
+	a = press(t, a, "h", "down", "enter", "tab", "enter")
+	must(t, a, "no Live set (.als) in this folder")
+	if a.ses != nil {
+		t.Fatal("hosted a folder without a set")
 	}
 }

@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -71,11 +73,50 @@ func (t *textInput) key(k tea.KeyMsg) bool {
 	case tea.KeySpace:
 		t.value += " "
 	case tea.KeyRunes:
-		t.value += string(k.Runes)
+		t.value += typed(k.Runes)
 	default:
 		return false
 	}
 	return true
+}
+
+// typed: tekst wpisany albo wklejony, bez znakow sterujacych - wklejanie w
+// terminalu potrafi przyniesc NUL, nowe linie i resztki sekwencji ESC[200~.
+func typed(rs []rune) string {
+	s := string(rs)
+	for _, junk := range []string{"\x1b[200~", "\x1b[201~", "[200~", "[201~"} {
+		s = strings.ReplaceAll(s, junk, "")
+	}
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// absStart: poczatek bezwzglednej sciezki ("C:\...", "\\serwer", "/...", "~").
+var absStart = regexp.MustCompile(`^(?:[A-Za-z]:[\\/]|\\\\|/|~)`)
+
+// lastDrive: ostatnie wystapienie "X:\" w tekscie - gdy ktos dokleil pelna
+// sciezke do juz wpisanej ("C:\Docs\C:\Users\..."), bierzemy te dokleona.
+var lastDrive = regexp.MustCompile(`[A-Za-z]:[\\/]`)
+
+// PathProblem: czemu sciezki nie da sie uzyc ("" - w porzadku).
+func PathProblem(path string) string {
+	if path == "" {
+		return "Type a folder path."
+	}
+	rest := path
+	if runtime.GOOS == "windows" {
+		if len(rest) >= 2 && rest[1] == ':' {
+			rest = rest[2:]
+		}
+		if i := strings.IndexAny(rest, `<>:"|?*`); i >= 0 {
+			return fmt.Sprintf("A folder path can't contain %q on Windows.", rest[i])
+		}
+	}
+	return ""
 }
 
 // --- pole folderu (jak /cd w Claude Code) -------------------------------------------------
@@ -114,6 +155,11 @@ func (p *pathInput) Path() string {
 	v := cleanPath(expandHome(p.value))
 	if v == "" {
 		return ""
+	}
+	if runtime.GOOS == "windows" {
+		if locs := lastDrive.FindAllStringIndex(v, -1); len(locs) > 1 {
+			v = v[locs[len(locs)-1][0]:]
+		}
 	}
 	if runtime.GOOS == "windows" && len(v) == 2 && v[1] == ':' {
 		v += sep
@@ -196,6 +242,15 @@ func (p *pathInput) key(k tea.KeyMsg) (submit, handled bool) {
 			return false, true
 		}
 		return true, true
+	}
+	// wklejona (albo wpisana od zera) pelna sciezka zastepuje to, co bylo w polu
+	if k.Type == tea.KeyRunes {
+		if t := cleanPath(typed(k.Runes)); len([]rune(t)) > 1 && absStart.MatchString(t) {
+			p.value = t
+			p.cur = -1
+			p.refresh()
+			return false, true
+		}
 	}
 	if p.textInput.key(k) {
 		p.refresh()

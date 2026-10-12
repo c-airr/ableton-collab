@@ -226,7 +226,8 @@ func (d *settingsDialog) update(a *App, msg tea.Msg) (dialog, tea.Cmd) {
 type hostStep int
 
 const (
-	hPath hostStep = iota
+	hWhere hostStep = iota // nowy folder czy istniejacy z setem
+	hPath
 	hBig
 	hPick
 	hWaitSet
@@ -234,6 +235,7 @@ const (
 
 type hostDialog struct {
 	step    hostStep
+	where   int // 0 nowy folder, 1 istniejacy z .als
 	path    *pathInput
 	info    FolderInfo
 	cur     int
@@ -247,9 +249,7 @@ type inspectMsg struct {
 	err  error
 }
 
-func newHostDialog(a *App) *hostDialog {
-	return &hostDialog{path: newPathInput(a.opts.BrowseFrom)}
-}
+func newHostDialog(a *App) *hostDialog { return &hostDialog{} }
 
 func (d *hostDialog) form(a *App) form {
 	switch d.step {
@@ -271,17 +271,60 @@ func (d *hostDialog) form(a *App) form {
 				"Live may create a \"<name> Project\" subfolder - that's fine.", "",
 				sWarnText.Render("waiting for an .als file...")},
 			hint: "esc back"}
+	case hPath:
+		title, body := "Where should the new session folder be?", "Type the path of a new folder (it gets created). Then save your set from Live into it."
+		if d.where == 1 {
+			title, body = "Pick the folder with your project", "The folder that already has your Live set (.als). Everything in it (samples, recordings...) is shared with everyone in the session."
+		}
+		return form{title: title, width: 74, path: d.path, err: d.err, body: []string{body},
+			hint: "type or paste a path · tab/↑↓ browse · enter use this folder · esc back"}
 	}
-	return form{title: "Host a session", width: 74, path: d.path, err: d.err,
-		body: []string{"Type the session folder. Everything in it (set, samples, recordings...) is shared with everyone in the session."},
-		hint: "type to filter · tab/↑↓ browse · enter use this folder · esc cancel"}
+	return form{title: "Host a session", width: 74, cur: d.cur, err: d.err,
+		options: []option{
+			{label: "New folder", detail: "Create an empty session folder, then save your set from Live into it."},
+			{label: "Existing folder", detail: "A folder that already has your Live project (.als)."},
+		}, hint: "enter pick · esc cancel"}
 }
 
-func (d *hostDialog) inspect(dir string) tea.Cmd {
+// submitPath: sprawdzenie wpisanej sciezki zaleznie od wyboru (nowy/istniejacy).
+func (d *hostDialog) submitPath() (dialog, tea.Cmd) {
+	dir := d.path.Path()
+	d.err = PathProblem(dir)
+	if d.err != "" {
+		return d, nil
+	}
+	fi, statErr := os.Stat(dir)
+	if d.where == 0 {
+		if statErr == nil {
+			if !fi.IsDir() {
+				d.err = "That's a file, not a folder."
+				return d, nil
+			}
+			if ents, _ := os.ReadDir(dir); len(ents) > 0 {
+				d.err = "That folder already has files - go back (esc) and choose Existing folder, or type a new folder name."
+				return d, nil
+			}
+		}
+		if why := forbidden(dir); why != "" {
+			d.err = "You can't use this folder: " + why
+			return d, nil
+		}
+		return d, d.inspect(dir, true)
+	}
+	if statErr != nil || !fi.IsDir() {
+		d.err = "There's no such folder - go back (esc) and choose New folder to create one."
+		return d, nil
+	}
+	return d, d.inspect(dir, false)
+}
+
+func (d *hostDialog) inspect(dir string, create bool) tea.Cmd {
 	d.busy = true
 	return func() tea.Msg {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return inspectMsg{err: err}
+		if create {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return inspectMsg{err: fmt.Errorf("can't create the folder: %w", err)}
+			}
 		}
 		info, err := InspectFolder(dir)
 		return inspectMsg{info, err}
@@ -301,6 +344,10 @@ func (d *hostDialog) update(a *App, msg tea.Msg) (dialog, tea.Cmd) {
 		if m.info.Project {
 			return nil, a.openCmd(m.info.Dir, false)
 		}
+		if prev == hPath && d.where == 1 && len(m.info.Sets) == 0 {
+			d.err = "There's no Live set (.als) in this folder - save one there from Live, or go back and choose New folder."
+			return d, nil
+		}
 		if prev == hPath && m.info.Big() {
 			d.step, d.cur = hBig, 1
 			return d, nil
@@ -318,13 +365,29 @@ func (d *hostDialog) update(a *App, msg tea.Msg) (dialog, tea.Cmd) {
 		return d, nil
 	}
 	if isEsc(msg) {
-		if d.step == hPath {
+		switch d.step {
+		case hWhere:
 			return nil, nil
+		case hPath:
+			d.step, d.cur = hWhere, d.where
+		default:
+			d.step = hPath
 		}
-		d.step, d.err = hPath, ""
+		d.err = ""
 		return d, nil
 	}
 	switch d.step {
+	case hWhere:
+		if i := optionKeys(&d.cur, 2, msg); i >= 0 {
+			d.where, d.step, d.err = i, hPath, ""
+			if i == 0 {
+				d.path = newPathInput(a.opts.BrowseFrom)
+				d.path.value += "my session"
+				d.path.refresh()
+			} else {
+				d.path = newPathInput(a.opts.BrowseFrom)
+			}
+		}
 	case hPath:
 		k, ok := msg.(tea.KeyMsg)
 		if !ok {
@@ -334,11 +397,7 @@ func (d *hostDialog) update(a *App, msg tea.Msg) (dialog, tea.Cmd) {
 			return d, nil
 		}
 		if submit, _ := d.path.key(k); submit && !d.busy {
-			d.err = ""
-			if d.path.Path() == "" {
-				return d, nil
-			}
-			return d, d.inspect(d.path.Path())
+			return d.submitPath()
 		}
 	case hBig:
 		switch optionKeys(&d.cur, 2, msg) {
@@ -657,7 +716,8 @@ func (d *joinDialog) update(a *App, msg tea.Msg) (dialog, tea.Cmd) {
 
 func (d *joinDialog) submitPath(a *App) (dialog, tea.Cmd) {
 	dir := d.path.Path()
-	if dir == "" {
+	if why := PathProblem(dir); why != "" {
+		d.err = why
 		return d, nil
 	}
 	d.err, d.dir = "", dir
