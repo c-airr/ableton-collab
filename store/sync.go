@@ -146,6 +146,7 @@ func (p *Project) commit(res map[string]als.Resolution, writeWorking bool) (*com
 	head := p.Head()
 	marker, parent := p.fileParent(vs, doc)
 	if parent == "" {
+		p.learnLive(doc)
 		v, err := p.writeVersion(data, nil, []string{"first version"})
 		if err != nil {
 			return nil, err
@@ -165,6 +166,7 @@ func (p *Project) commit(res map[string]als.Resolution, writeWorking bool) (*com
 	if len(ch) == 0 {
 		return cr, nil
 	}
+	p.learnLive(doc) // zmiany - plik zapisal Live z tego komputera
 	behind := head != "" && vs[head] != nil && !IsAncestor(vs, head, parent)
 	if behind {
 		// najpierw sprawdzamy, czy scalenie sie uda - przy konflikcie nic nie

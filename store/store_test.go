@@ -610,3 +610,52 @@ func TestSaveFromStaleLiveAfterReload(t *testing.T) {
 		}
 	}
 }
+
+// Lite (3076) i Suite (3077) w jednej sesji: plik roboczy dostaje liczbe
+// Live'a z tego komputera, inaczej Suite nie zapisze seta z Lite.
+func TestWorkingSetGetsLocalEdition(t *testing.T) {
+	setOPN := func(data []byte, v string) []byte {
+		d, err := readDoc(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.Root.Walk(func(n *als.Node) {
+			if n.Name == opnElem {
+				n.SetAttr("Value", v)
+			}
+		})
+		out, _ := d.Encode()
+		return out
+	}
+	opns := func(data []byte) map[string]int {
+		d, _ := readDoc(data)
+		m := map[string]int{}
+		d.Root.Walk(func(n *als.Node) {
+			if n.Name == opnElem {
+				v, _ := n.Attr("Value")
+				m[v]++
+			}
+		})
+		return m
+	}
+	a := initPerson(t, "A", setOPN(testdata(t, "base.als"), "3077")) // Suite
+	b := joinPerson(t, "B", a)
+	mustPull(t, b, nil)
+	b.write(t, setOPN(testdata(t, "theirs.als"), "3076")) // Lite zapisuje zmiane
+	if _, err := b.p.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	syncDirs(t, a, b)
+	mustPull(t, a, nil)
+	if got := opns(a.working(t)); len(got) != 1 || got["3077"] == 0 {
+		t.Fatalf("A's working set has %v, want only 3077", got)
+	}
+	// u B odwrotnie: zmiana A wraca z liczba Lite
+	a.write(t, setOPN(testdata(t, "ours.als"), "3077"))
+	mustPull(t, a, nil)
+	syncDirs(t, a, b)
+	mustPull(t, b, nil)
+	if got := opns(b.working(t)); len(got) != 1 || got["3076"] == 0 {
+		t.Fatalf("B's working set has %v, want only 3076", got)
+	}
+}

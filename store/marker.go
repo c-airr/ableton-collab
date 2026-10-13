@@ -54,6 +54,12 @@ func docBase(d *als.Doc) string {
 // writeWorkingVersion: plik roboczy = wersja id (data - jej bajty), ze
 // znacznikiem. Live, ktory go wczyta, zapisze tresc pochodzaca z id.
 func (p *Project) writeWorkingVersion(data []byte, id string) error {
+	// liczba wydania Live'a z tego komputera (edition.go)
+	if d, err := readDoc(data); err == nil && p.forLocalLive(d) {
+		if data, err = d.Encode(); err != nil {
+			return err
+		}
+	}
 	marked, err := withBase(data, id)
 	if err != nil {
 		return err
