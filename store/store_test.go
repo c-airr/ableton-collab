@@ -601,7 +601,7 @@ func TestSaveFromStaleLiveAfterReload(t *testing.T) {
 		if docBase(d) != before {
 			t.Fatalf("marked=%v: reloaded file has marker %q, want head", marked, docBase(d))
 		}
-		d.Root.Child("LiveSet").Child("Tracks").Children[0].Find("Name", "EffectiveName").SetAttr("Value", "Renamed")
+		d.Root.Child("LiveSet").Child("Tracks").Children[0].Find("Name", "UserName").SetAttr("Value", "Renamed")
 		data, _ := d.Encode()
 		a.write(t, data)
 		r, err = a.p.PullLive(nil)

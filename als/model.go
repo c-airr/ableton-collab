@@ -106,6 +106,12 @@ var noiseElems = map[string]bool{
 	// dane skryptow i widoku (Song/Track.set_data, Push) - m.in. znaczniki
 	// abcollab: sesja i wersja, z ktorej pochodzi tresc pliku
 	"ViewData": true,
+	// nazwa wyswietlana - Live liczy ja sam przy zapisie (bez UserName to
+	// numer pozycji + nazwa, np. "3-Audio" po dodaniu sciezki wyzej);
+	// zmiana nazwy przez uzytkownika to UserName
+	"EffectiveName": true,
+	// zaznaczenie (np. pad w Drum Racku)
+	"IsSelected": true,
 }
 
 var noiseAttrs = map[string]map[string]bool{
