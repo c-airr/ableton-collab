@@ -242,6 +242,8 @@ type hostDialog struct {
 	err     string
 	busy    bool
 	polling bool
+	tmpl    string // szablon seta dla nowego folderu ("" - czekamy na zapis z Live)
+	created bool   // abcollab sam zalozyl set - po starcie sesji otwieramy go w Live
 }
 
 type inspectMsg struct {
@@ -249,7 +251,7 @@ type inspectMsg struct {
 	err  error
 }
 
-func newHostDialog(a *App) *hostDialog { return &hostDialog{} }
+func newHostDialog(a *App) *hostDialog { return &hostDialog{tmpl: a.be.DefaultSet()} }
 
 func (d *hostDialog) form(a *App) form {
 	switch d.step {
@@ -267,12 +269,15 @@ func (d *hostDialog) form(a *App) form {
 	case hWaitSet:
 		return form{title: "Save your project from Live into this folder", width: 74,
 			body: []string{sBold.Render(dirFit(d.info.Dir, 64)), "",
-				"In Live: File > Save Live Set As... and pick this folder.",
+				"In Live: File > Save Live Set As..., pick this folder and name it " + sBold.Render(strings.TrimSuffix(NewSetName, ".als")) + ".",
 				"Live may create a \"<name> Project\" subfolder - that's fine.", "",
 				sWarnText.Render("waiting for an .als file...")},
 			hint: "esc back"}
 	case hPath:
 		title, body := "Where should the new session folder be?", "Type the path of a new folder (it gets created). Then save your set from Live into it."
+		if d.tmpl != "" {
+			body = "Type the path of a new folder. It gets created with a new Live set, " + NewSetName + ", and opens in Live."
+		}
 		if d.where == 1 {
 			title, body = "Pick the folder with your project", "The folder that already has your Live set (.als). Everything in it (samples, recordings...) is shared with everyone in the session."
 		}
@@ -281,7 +286,7 @@ func (d *hostDialog) form(a *App) form {
 	}
 	return form{title: "Host a session", width: 74, cur: d.cur, err: d.err,
 		options: []option{
-			{label: "New folder", detail: "Create an empty session folder, then save your set from Live into it."},
+			{label: "New folder", detail: "A new session folder with a new Live set (" + NewSetName + ")."},
 			{label: "Existing folder", detail: "A folder that already has your Live project (.als)."},
 		}, hint: "enter pick · esc cancel"}
 }
@@ -320,10 +325,25 @@ func (d *hostDialog) submitPath() (dialog, tea.Cmd) {
 
 func (d *hostDialog) inspect(dir string, create bool) tea.Cmd {
 	d.busy = true
+	tmpl := ""
+	if create {
+		tmpl = d.tmpl
+	}
+	d.created = tmpl != ""
 	return func() tea.Msg {
 		if create {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return inspectMsg{err: fmt.Errorf("can't create the folder: %w", err)}
+			}
+		}
+		if tmpl != "" {
+			// nowy set z szablonu Live'a (jak File > New), od razu z nazwa
+			data, err := os.ReadFile(tmpl)
+			if err == nil {
+				err = os.WriteFile(filepath.Join(dir, NewSetName), data, 0o644)
+			}
+			if err != nil {
+				return inspectMsg{err: fmt.Errorf("can't create %s: %w", NewSetName, err)}
 			}
 		}
 		info, err := InspectFolder(dir)
@@ -435,10 +455,15 @@ func (d *hostDialog) afterBig(a *App) (dialog, tea.Cmd) {
 
 func (d *hostDialog) host(a *App, set string) (dialog, tea.Cmd) {
 	a.sid++
-	sid, be, dir := a.sid, a.be, d.info.Dir
+	sid, be, dir, open := a.sid, a.be, d.info.Dir, d.created
 	return nil, func() tea.Msg {
 		p, net, err := be.Host(dir, set)
-		return openedMsg{sid: sid, p: p, net: net, err: err, invite: true}
+		m := openedMsg{sid: sid, p: p, net: net, err: err, invite: true}
+		if err == nil && open {
+			m.live = p.WorkingPath()
+			m.liveErr = be.OpenInLive(m.live)
+		}
+		return m
 	}
 }
 

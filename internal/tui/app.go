@@ -7,6 +7,7 @@
 package tui
 
 import (
+	"path/filepath"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -39,7 +40,13 @@ type Backend interface {
 	SaveInLive() (bool, error)
 	// OpenInLive otwiera set w Live.
 	OpenInLive(path string) error
+	// DefaultSet: szablon nowego seta Live'a ("" - nie znaleziono).
+	DefaultSet() string
 }
+
+// NewSetName: set zakladany w nowym folderze sesji - w Live'ie widac po
+// nazwie, ze to wspolny projekt, a nie kolejny "Untitled".
+const NewSetName = "collab.als"
 
 // Settings: przelaczniki w Settings (pamietane miedzy uruchomieniami).
 type Settings struct {
@@ -163,6 +170,8 @@ type openedMsg struct {
 	err     error
 	invite  bool // nowa sesja - pokaz zaproszenie
 	verbose string
+	live    string // set otwarty w Live (nowa sesja z gotowym setem)
+	liveErr error
 }
 
 func tick(d time.Duration) tea.Cmd {
@@ -226,6 +235,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		cmd := a.startSession(msg.p, msg.net)
+		switch {
+		case msg.liveErr != nil:
+			a.say(lWarn, msg.liveErr.Error())
+		case msg.live != "":
+			a.say(lInfo, "Opening "+filepath.Base(msg.live)+" in Live")
+		}
 		if msg.invite && msg.net != nil {
 			a.dlg = newInviteDialog(&a)
 		}

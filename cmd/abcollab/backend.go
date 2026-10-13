@@ -343,6 +343,9 @@ func browseFrom() string {
 	return home
 }
 
+// DefaultSet: szablon nowego seta (File > New w Live).
+func (b *backend) DefaultSet() string { return live.DefaultSet() }
+
 // OpenInLive otwiera set w Live (skojarzenie .als w systemie; na Linuksie
 // launcher Live'a pod Wine z ableton-linux albo xdg-open).
 func (b *backend) OpenInLive(path string) error {

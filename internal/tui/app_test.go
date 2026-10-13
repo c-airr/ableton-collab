@@ -88,6 +88,7 @@ type fakeBackend struct {
 	settings Settings
 	saves    int
 	opened   string
+	template string
 }
 
 func (b *fakeBackend) Live(p *store.Project) LiveSync { return b.live }
@@ -95,6 +96,7 @@ func (b *fakeBackend) Settings() Settings             { return b.settings }
 func (b *fakeBackend) SetSettings(s Settings) error   { b.settings = s; return nil }
 func (b *fakeBackend) SaveInLive() (bool, error)      { b.saves++; return true, nil }
 func (b *fakeBackend) OpenInLive(path string) error   { b.opened = path; return nil }
+func (b *fakeBackend) DefaultSet() string             { return b.template }
 
 func (b *fakeBackend) DeviceID() string { return idGuest }
 func (b *fakeBackend) Rename(n string) error {
@@ -393,6 +395,27 @@ func TestHostWaitsForLive(t *testing.T) {
 	if a.ses == nil || a.ses.p.Meta.Set != "x Project/x.als" {
 		t.Fatalf("no session:\n%s", view(a))
 	}
+}
+
+// Nowy folder: abcollab sam zaklada collab.als z szablonu Live'a i otwiera go.
+func TestHostNewFolderCreatesSet(t *testing.T) {
+	root := t.TempDir()
+	tmpl := filepath.Join(t.TempDir(), "DefaultLiveSet.als")
+	os.WriteFile(tmpl, tinySet(), 0o644)
+	be := &fakeBackend{t: t, me: store.NewDevice("Ja"), net: &fakeNet{}, template: tmpl}
+	a := newApp(t, be, Options{BrowseFrom: root})
+	a = press(t, a, "h")
+	must(t, a, NewSetName)
+	a = press(t, a, "enter", "enter")
+	dump(t, a)
+	if a.ses == nil || a.ses.p.Meta.Set != NewSetName {
+		t.Fatalf("no session with %s:\n%s", NewSetName, view(a))
+	}
+	if want := filepath.Join(root, "my session", NewSetName); be.opened != want {
+		t.Fatalf("opened %q, want %q", be.opened, want)
+	}
+	a = press(t, a, "esc") // zaproszenie
+	must(t, a, "Opening "+NewSetName+" in Live")
 }
 
 func TestHostForbiddenFolder(t *testing.T) {
