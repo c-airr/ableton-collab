@@ -401,6 +401,13 @@ func installLive() string {
 
 // runTUI: panel. dir (z -C) - od razu ta sesja; inaczej ostatnio otwarta.
 func runTUI(dir string, offline bool, code string) error {
+	lock, err := lockInstance()
+	if err != nil {
+		return err
+	}
+	if lock != nil {
+		defer lock.Close()
+	}
 	d, isNew, err := loadDevice()
 	if err != nil {
 		return err
