@@ -186,7 +186,7 @@ func TestJoinFastForward(t *testing.T) {
 		t.Fatalf("status B: %+v", st.Peers)
 	}
 	r := mustPull(t, b, nil)
-	if len(r.FastForwarded) != 1 || !bytes.Equal(b.working(t), testdata(t, "base.als")) || b.p.Head() != a.p.Head() {
+	if len(r.FastForwarded) != 1 || !SameSet(b.working(t), testdata(t, "base.als")) || b.p.Head() != a.p.Head() {
 		t.Fatalf("B nie dostal seta: %+v", r)
 	}
 }
@@ -227,7 +227,7 @@ func TestDivergeAndMerge(t *testing.T) {
 	if len(r.FastForwarded) != 1 || len(r.Merged) != 0 {
 		t.Fatalf("B pull: %+v", r)
 	}
-	if !bytes.Equal(a.working(t), b.working(t)) {
+	if !SameSet(a.working(t), b.working(t)) {
 		t.Error("A i B maja rozne pliki po synchronizacji")
 	}
 	syncDirs(t, a, b)
@@ -270,7 +270,7 @@ func TestPullConflictThenResolve(t *testing.T) {
 		t.Fatalf("oczekiwany 1 konflikt z B: %+v", r)
 	}
 	headBefore := a.p.Head()
-	if !bytes.Equal(a.working(t), testdata(t, "theirs.als")) {
+	if !SameSet(a.working(t), testdata(t, "theirs.als")) {
 		t.Fatal("plik roboczy zmieniony mimo konfliktu")
 	}
 	r = mustPull(t, a, map[string]als.Resolution{r.Conflicts[0].ID: als.Theirs})
@@ -395,7 +395,7 @@ func TestSetInSubfolder(t *testing.T) {
 	if r, err := g.Pull(nil); err != nil || len(r.FastForwarded) != 1 {
 		t.Fatalf("pull: %v %+v", err, r)
 	}
-	if got, _ := os.ReadFile(filepath.Join(gdir, "song Project", "song.als")); !bytes.Equal(got, set) {
+	if got, _ := os.ReadFile(filepath.Join(gdir, "song Project", "song.als")); !SameSet(got, set) {
 		t.Error("set goscia nie powstal w podfolderze")
 	}
 	for _, bad := range []string{"../x.als", `a\b.als`, "/x.als", "C:/x.als", ".abcollab/x.als", "a//b.als", "x.txt", "./x.als"} {
@@ -445,7 +445,7 @@ func TestAdoptOwnCopy(t *testing.T) {
 	if len(hr.FastForwarded) != 1 {
 		t.Fatalf("host: %+v", hr)
 	}
-	if !bytes.Equal(host.working(t), g.working(t)) {
+	if !SameSet(host.working(t), g.working(t)) {
 		t.Error("host i gosc maja rozne sety")
 	}
 }
@@ -536,7 +536,77 @@ func TestCheckoutIntoReadOnlyDir(t *testing.T) {
 	if _, err := g.Pull(nil); err != nil {
 		t.Fatalf("pull into a read-only project dir: %v", err)
 	}
-	if got, _ := os.ReadFile(filepath.Join(gdir, "x Project", "x.als")); !bytes.Equal(got, set) {
+	if got, _ := os.ReadFile(filepath.Join(gdir, "x Project", "x.als")); !SameSet(got, set) {
 		t.Fatal("set not written")
+	}
+}
+
+// Reload podmienia plik, ale Live go nie przeladowal i zapisuje stara tresc
+// (z nowym plikiem nadpisanym) - zapis nie moze cofnac zmian innych.
+func TestSaveFromStaleLiveAfterReload(t *testing.T) {
+	for _, marked := range []bool{false, true} {
+		a := initPerson(t, "A", testdata(t, "base.als"))
+		b := joinPerson(t, "B", a)
+		mustPull(t, b, nil)
+		// Live A ma otwarta wersje startowa: bez znacznika (set sprzed
+		// znacznikow) albo ze znacznikiem z wczesniejszego pobrania
+		stale := testdata(t, "ours.als") // A dodaje gitare
+		if marked {
+			if err := a.p.Reload(); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			if stale, err = withBase(stale, a.p.Head()); err != nil || stale == nil {
+				t.Fatal("no marker", err)
+			}
+		}
+		b.write(t, testdata(t, "theirs.als")) // B zmienia hihaty
+		if _, err := b.p.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		syncDirs(t, a, b)
+		if _, err := a.p.PullLive(nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.p.Reload(); err != nil {
+			t.Fatal(err)
+		}
+		// Live nie wczytal nowego pliku - Ctrl+S zapisuje to, co ma w pamieci
+		a.write(t, stale)
+		r, err := a.p.PullLive(nil)
+		if err != nil || r.Committed == nil || len(r.Conflicts) > 0 {
+			t.Fatalf("marked=%v: %v %+v", marked, err, r)
+		}
+		vs, _ := a.p.Versions()
+		if got := vs[r.Committed.ID].Parents; len(got) != 1 || got[0] == b.p.Head() {
+			t.Errorf("marked=%v: stale save got the reloaded version as parent", marked)
+		}
+		head, _ := a.p.LoadDoc(vs[a.p.Head()])
+		if !strings.Contains(string(head.XMLBytes()), "8-12 String Guitar") {
+			t.Errorf("marked=%v: my guitar missing", marked)
+		}
+		bv, _ := b.p.LoadDoc(vs[b.p.Head()])
+		for _, c := range als.Diff(bv, head) {
+			if strings.Contains(c.Label, "Hats") {
+				t.Errorf("marked=%v: stale save reverted B's change: %s", marked, c)
+			}
+		}
+		// Live w koncu wczytuje plik (ze znacznikiem head) - kolejny zapis
+		// idzie juz od head, bez scalania
+		if err := a.p.Reload(); err != nil {
+			t.Fatal(err)
+		}
+		before := a.p.Head()
+		d := a.doc(t)
+		if docBase(d) != before {
+			t.Fatalf("marked=%v: reloaded file has marker %q, want head", marked, docBase(d))
+		}
+		d.Root.Child("LiveSet").Child("Tracks").Children[0].Find("Name", "EffectiveName").SetAttr("Value", "Renamed")
+		data, _ := d.Encode()
+		a.write(t, data)
+		r, err = a.p.PullLive(nil)
+		if err != nil || r.Committed == nil || len(r.Merged) != 0 || vs[before] == nil || r.Committed.Parents[0] != before {
+			t.Fatalf("marked=%v: save after reload: %v %+v", marked, err, r)
+		}
 	}
 }

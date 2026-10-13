@@ -439,7 +439,7 @@ func TestJoinNewFolder(t *testing.T) {
 	if a.ses == nil {
 		t.Fatalf("no session after delivery:\n%s", view(a))
 	}
-	if got, _ := os.ReadFile(filepath.Join(want, "beat Project", "beat.als")); !bytes.Equal(got, tinySet()) {
+	if got, _ := os.ReadFile(filepath.Join(want, "beat Project", "beat.als")); !store.SameSet(got, tinySet()) {
 		t.Error("set not downloaded")
 	}
 }

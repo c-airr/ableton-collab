@@ -275,6 +275,31 @@ try:
     for m in lines(0.8):
         assert m.get("key") != "clip/0/s0", "echo of an applied change: %r" % m
 
+    # zmiana z base: scalona z tym, co jest w Live (moja nuta 72 zostaje),
+    # nuty z JSON-a Go (0 zamiast 0.0) to te same nuty - bez przepisywania
+    base = {"track": "Hats", "name": "hh2", "color": 5, "looping": True, "loop": [0.0, 4.0], "len": 4.0, "midi": True,
+            "notes": [[60, 0, 0.25, 100, False, 1, 0, 64], [67, 2, 0.5, 80, False, 1, 0, 64]]}
+    clip.add_new_notes([Spec(pitch=72, start_time=3.0, duration=0.25, velocity=90, mute=False, probability=1.0,
+                             velocity_deviation=0.0, release_velocity=64.0)])
+    recv("change")
+    ids_before = sorted(n.note_id for n in clip.notes)
+    theirs = dict(base)
+    theirs["notes"] = base["notes"] + [[64, 1, 0.25, 100, False, 1, 0, 64]]
+    theirs["name"] = "theirs"
+    mine_name = "mine"
+    clip.name = mine_name  # nazwa zmieniona tu i tam - win=False: zostaje moja
+    send({"op": "apply", "key": "clip/0/s0", "obj": theirs, "base": base, "win": False, "id": 10})
+    ap = recv("applied")
+    assert ap["ok"], ap
+    assert sorted(n.pitch for n in clip.notes) == [60, 64, 67, 72], [n.pitch for n in clip.notes]
+    assert all(i in [n.note_id for n in clip.notes] for i in ids_before), "merge rewrote existing notes"
+    assert clip.name == "mine", clip.name
+    send({"op": "apply", "key": "clip/0/s0", "obj": dict(theirs, name="again"), "base": dict(theirs, name="hh2"),
+          "win": True, "id": 11})
+    assert recv("applied")["ok"] and clip.name == "again"
+    for m in lines(0.5):
+        pass
+
     # nowy klip w pustym slocie, mikser, tempo
     send({"op": "apply", "key": "clip/1/s2", "obj": {"track": "Bass", "name": "b", "color": 3, "looping": True,
                                                        "loop": [0.0, 8.0], "len": 8.0, "midi": True,

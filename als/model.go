@@ -103,6 +103,9 @@ var noiseElems = map[string]bool{
 	"ColorSequenceIndex":                     true,
 	// przewiniecie i zoom Arrangement View
 	"SequencerNavigator": true,
+	// dane skryptow i widoku (Song/Track.set_data, Push) - m.in. znaczniki
+	// abcollab: sesja i wersja, z ktorej pochodzi tresc pliku
+	"ViewData": true,
 }
 
 var noiseAttrs = map[string]map[string]bool{

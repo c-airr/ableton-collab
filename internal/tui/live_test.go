@@ -220,7 +220,7 @@ func TestOpenInLiveGetsLatest(t *testing.T) {
 	if be.opened == "" {
 		t.Fatal("not opened")
 	}
-	if got, _ := os.ReadFile(a.ses.p.WorkingPath()); !bytes.Equal(got, newer) {
+	if got, _ := os.ReadFile(a.ses.p.WorkingPath()); !store.SameSet(got, newer) {
 		t.Fatal("opened an old set - the newer version wasn't pulled first")
 	}
 	mustLog(t, a, "Got the latest version before opening")

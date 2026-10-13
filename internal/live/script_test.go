@@ -1,10 +1,24 @@
 package live
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// ScriptVersion w Go = VERSION w skrypcie.
+func TestScriptVersion(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("script", "AbletonCollab", "__init__.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), fmt.Sprintf("\nVERSION = %d\n", ScriptVersion)) {
+		t.Fatalf("script VERSION differs from ScriptVersion %d", ScriptVersion)
+	}
+}
 
 // Skrypt AbletonCollab na atrapie API Live'a (script/test_script.py).
 func TestScriptWithFakeLive(t *testing.T) {

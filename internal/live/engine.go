@@ -19,6 +19,12 @@ import (
 // silnik nanosi ja w ich Live przez skrypt. Kazda operacja niesie odcisk stanu,
 // na ktorym zostala zrobiona (Base): jesli u odbiorcy ten klucz zmienil sie w
 // miedzyczasie inaczej, to jednoczesna edycja - konflikt, nie nadpisanie.
+//
+// Od wersji z Prev (stan, na ktorym zmiane zrobiono) odbiorca nie nadpisuje
+// klucza, tylko nanosi roznice Prev -> Obj na to, co ma teraz w Live (skrypt
+// scala nuty trojstronnie) - kilka osob grajacych naraz w jednym klipie
+// dostaje sume, bez okna wyboru. Operacje bez Prev (starsze abcollab) ida
+// po staremu.
 
 type Op struct {
 	Seq     int      `json:"seq"`
@@ -26,6 +32,7 @@ type Op struct {
 	Key     string   `json:"key"`
 	Base    string   `json:"base"`
 	Obj     Obj      `json:"obj"`
+	Prev    Obj      `json:"prev,omitempty"`    // stan, na ktorym zmiane zrobiono
 	Resolve []string `json:"resolve,omitempty"` // rozstrzygniecie konfliktu: para odciskow
 }
 
@@ -63,6 +70,7 @@ type Engine struct {
 	status   Status
 	local    map[string]string // odcisk stanu w moim Live
 	synced   map[string]string // odcisk ostatniego stanu uzgodnionego z innymi
+	agreed   map[string]Obj    // ten stan (baza dla roznic wysylanych innym)
 	cur      map[string]Obj    // aktualny stan w moim Live
 	paused   map[string]*conflict
 	chosen   map[string][]string // moje rozstrzygniecia: para odciskow konfliktu
@@ -82,9 +90,10 @@ type conflict struct {
 }
 
 type pendingApply struct {
-	key  string
-	obj  Obj
-	from string
+	key   string
+	obj   Obj
+	from  string
+	merge bool // naniesiona roznica (Prev -> Obj) scalona z tym, co bylo w Live
 }
 
 // Start: silnik dla sesji w root (.abcollab). me - moje ID w store, session -
@@ -92,7 +101,7 @@ type pendingApply struct {
 func Start(cl *Client, root, me, session string, names func(string) string, tracks func() []string) *Engine {
 	e := &Engine{cl: cl, root: root, me: me, session: session, names: names, tracks: tracks,
 		notes: make(chan Note, 256), cmds: make(chan func(), 16), stop: make(chan struct{}),
-		local: map[string]string{}, synced: map[string]string{}, cur: map[string]Obj{},
+		local: map[string]string{}, synced: map[string]string{}, agreed: map[string]Obj{}, cur: map[string]Obj{},
 		paused: map[string]*conflict{}, chosen: map[string][]string{}, seen: map[string]int{}, pending: map[int]pendingApply{}}
 	e.seq = e.lastSeq(e.me)
 	for _, d := range e.peers() {
@@ -102,6 +111,11 @@ func Start(cl *Client, root, me, session string, names func(string) string, trac
 	go e.run()
 	return e
 }
+
+// ScriptVersion: VERSION skryptu w script/AbletonCollab - Live wczytuje
+// skrypt przy starcie, wiec po aktualizacji abcollab dziala stary, dopoki
+// Live sie nie zrestartuje.
+const ScriptVersion = 4
 
 const notConnected = "Live not connected - in Live: Settings > Link, Tempo & MIDI > Control Surface: AbletonCollab"
 
@@ -198,6 +212,9 @@ func (e *Engine) onMsg(m Msg) {
 	switch m.T {
 	case "up":
 		e.setStatus(Status{Connected: true, Detail: "checking the set open in Live..."})
+		if m.V < ScriptVersion {
+			e.note(Note{Kind: "log", Text: "Live runs an older AbletonCollab script - restart Live to update it (until then edits made at the same time may ask which to keep)"})
+		}
 		e.cl.Send(map[string]any{"op": "state"})
 	case "down":
 		e.setStatus(Status{Detail: notConnected})
@@ -220,7 +237,7 @@ func (e *Engine) onMsg(m Msg) {
 			h := Hash(o)
 			e.cur[k], e.local[k] = o, h
 			if _, ok := e.synced[k]; !ok {
-				e.synced[k] = h
+				e.synced[k], e.agreed[k] = h, o
 			}
 		}
 		if !e.status.Matched {
@@ -255,7 +272,14 @@ func (e *Engine) onMsg(m Msg) {
 			obj = m.Obj // stan po naniesieniu, odczytany z Live
 		}
 		h := Hash(obj)
-		e.cur[p.key], e.local[p.key], e.synced[p.key] = obj, h, h
+		e.cur[p.key], e.local[p.key] = obj, h
+		if p.merge && h != Hash(p.obj) {
+			// w Live bylo cos jeszcze (moja niewyslana praca) - wynik scalenia
+			// idzie do innych jako zmiana od stanu, ktory przyszedl
+			e.send(p.key, obj, Hash(p.obj), p.obj)
+		} else {
+			e.synced[p.key], e.agreed[p.key] = h, obj
+		}
 		if p.from == "" {
 			e.note(Note{Kind: "log", Text: "↓ Brought in saved changes to " + Label(p.key, obj)})
 		} else {
@@ -275,12 +299,22 @@ func (e *Engine) onLocal(key string, obj Obj) {
 	if h == e.synced[key] {
 		return
 	}
-	if err := e.write(Op{Key: key, Base: e.synced[key], Obj: obj}); err != nil {
-		e.note(Note{Kind: "log", Text: "can't send a change: " + err.Error()})
-		return
+	if e.send(key, obj, e.synced[key], e.agreed[key]) {
+		e.note(Note{Kind: "local", Text: Label(key, obj)})
 	}
-	e.synced[key] = h
-	e.note(Note{Kind: "local", Text: Label(key, obj)})
+}
+
+// send: zmiana klucza z prev na obj idzie do innych.
+func (e *Engine) send(key string, obj Obj, base string, prev Obj) bool {
+	if prev == nil {
+		prev = Obj{"empty": true} // klucza nie bylo (np. nowy klip)
+	}
+	if err := e.write(Op{Key: key, Base: base, Prev: prev, Obj: obj}); err != nil {
+		e.note(Note{Kind: "log", Text: "can't send a change: " + err.Error()})
+		return false
+	}
+	e.synced[key], e.agreed[key] = Hash(obj), obj
+	return true
 }
 
 // onRemote: operacja od innego uczestnika.
@@ -293,6 +327,19 @@ func (e *Engine) onRemote(dev string, op Op) {
 	}
 	if c := e.paused[op.Key]; c != nil {
 		c.theirs, c.from = op.Obj, who // nowsza wersja tej samej osoby
+		return
+	}
+	if op.Prev != nil {
+		if h == e.local[op.Key] {
+			e.synced[op.Key], e.agreed[op.Key] = h, op.Obj // juz to mam
+			return
+		}
+		// roznica Prev -> Obj na to, co jest teraz w Live; pole zmienione
+		// naraz u obu dostaje wartosc urzadzenia o mniejszym ID (u obu tak samo)
+		id, ok := e.cl.Send(map[string]any{"op": "apply", "key": op.Key, "obj": op.Obj, "base": op.Prev, "win": dev < e.me})
+		if ok {
+			e.pending[id] = pendingApply{key: op.Key, obj: op.Obj, from: who, merge: true}
+		}
 		return
 	}
 	switch {
@@ -337,7 +384,7 @@ func (e *Engine) resolve(key string, mine bool) {
 	if !mine {
 		e.apply(key, pick, c.from)
 	}
-	e.synced[key] = h
+	e.synced[key], e.agreed[key] = h, pick
 	e.chosen[key] = c.pair
 	delete(e.paused, key)
 	e.note(Note{Kind: "log", Text: "Kept " + map[bool]string{true: "your", false: c.from + "'s"}[mine] + " version of " + Label(key, pick)})

@@ -25,7 +25,7 @@ import Live
 from _Framework.ControlSurface import ControlSurface
 
 PORT = 9879
-VERSION = 3
+VERSION = 4
 SESSION_KEY = "abcollab.session"
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEBOUNCE = 0.3
@@ -41,6 +41,33 @@ def canon(obj):
 
 def r(x):
     return round(float(x), 6)
+
+
+def nkey(n):
+    # nuta w jednej postaci (z JSON-a od abcollab 0 przychodzi jako int)
+    return canon([int(n[0]), r(n[1]), r(n[2]), r(n[3]), bool(n[4]), r(n[5]), r(n[6]), r(n[7])])
+
+
+def merge_notes(base, theirs, mine):
+    # trojstronne scalenie nut (jak mergeNotes w abcollab): zmienione tylko
+    # u nich - jak u nich, tylko u mnie - jak u mnie, po obu stronach - wiecej
+    b, t, m, note = {}, {}, {}, {}
+    for ns, cnt in ((base, b), (theirs, t), (mine, m)):
+        for n in ns:
+            k = nkey(n)
+            cnt[k] = cnt.get(k, 0) + 1
+            note[k] = n
+    out = []
+    for k, n in note.items():
+        bc, tc, mc = b.get(k, 0), t.get(k, 0), m.get(k, 0)
+        if mc == bc:
+            want = tc
+        elif tc == bc:
+            want = mc
+        else:
+            want = max(mc, tc)
+        out.extend([n] * want)
+    return out
 
 
 class Mismatch(Exception):
@@ -251,23 +278,54 @@ class AbletonCollab(ControlSurface):
 
     # --- nanoszenie zmian innych ------------------------------------------------------
 
-    def _apply(self, key, obj):
+    def _apply(self, key, obj, base=None, win=True):
+        # base: stan, na ktorym nadawca zrobil zmiane - wtedy nanosimy tylko
+        # to, co zmienil (nuty scalane z tym, co jest teraz w Live: rownoczesna
+        # praca kilku osob sie sumuje). Pole zmienione naraz tu i tam (inaczej)
+        # dostaje wartosc nadawcy tylko, gdy win (mniejsze ID urzadzenia).
+        cur = None
+        if base is not None:
+            try:
+                cur = self._read(key)
+            except Exception:
+                cur = None
+
+        def take(f):
+            if f not in obj:
+                return False
+            if base is None:
+                return True
+            if f in base and canon(base[f]) == canon(obj[f]):
+                return False  # nadawca tego nie zmienil
+            if cur is not None and f in cur and f in base and canon(cur[f]) != canon(base[f]) \
+                    and canon(cur[f]) != canon(obj[f]) and not win:
+                return False  # zmienione tu i tam - zostaje moje
+            return True
+
         s = self._song
         if key == "tempo":
-            s.tempo = obj["bpm"]
+            if take("bpm"):
+                s.tempo = obj["bpm"]
             return
         parts = key.split("/")
         t = self._track(int(parts[1]), obj.get("track"))
         if parts[0] == "mixer":
             md = t.mixer_device
-            md.volume.value = self._clamp(md.volume, obj["vol"])
-            md.panning.value = self._clamp(md.panning, obj["pan"])
-            t.mute = bool(obj["mute"])
-            for snd, v in zip(md.sends, obj.get("sends", [])):
-                snd.value = self._clamp(snd, v)
+            if take("vol"):
+                md.volume.value = self._clamp(md.volume, obj["vol"])
+            if take("pan"):
+                md.panning.value = self._clamp(md.panning, obj["pan"])
+            if take("mute"):
+                t.mute = bool(obj["mute"])
+            if take("sends"):
+                for snd, v in zip(md.sends, obj.get("sends", [])):
+                    snd.value = self._clamp(snd, v)
             return
         cs, c = self._clip_at(t, parts[2])
         if obj.get("empty"):
+            if base is not None and cur is not None and not cur.get("empty") and \
+                    canon(sorted(map(nkey, cur.get("notes", [])))) != canon(sorted(map(nkey, base.get("notes", [])))):
+                return  # usuniety tam, a zmieniony tutaj - zostaje
             if cs is not None and cs.has_clip:
                 cs.delete_clip()
             elif cs is None and c is not None:
@@ -280,18 +338,26 @@ class AbletonCollab(ControlSurface):
                 raise Mismatch("audio clip missing - needs a reload")
             cs.create_clip(obj.get("len") or 4.0)
             c = cs.clip
-        c.name = obj.get("name", "")
-        c.color = int(obj.get("color", c.color))
-        c.looping = bool(obj.get("looping", c.looping))
-        start, end = obj["loop"]
-        if start >= c.loop_end:
-            c.loop_end = end
-            c.loop_start = start
-        else:
-            c.loop_start = start
-            c.loop_end = end
+            base, cur = None, None  # nowy klip - wszystko od nadawcy
+        if take("name"):
+            c.name = obj.get("name", "")
+        if take("color"):
+            c.color = int(obj.get("color", c.color))
+        if take("looping"):
+            c.looping = bool(obj.get("looping", c.looping))
+        if take("loop"):
+            start, end = obj["loop"]
+            if start >= c.loop_end:
+                c.loop_end = end
+                c.loop_start = start
+            else:
+                c.loop_start = start
+                c.loop_end = end
         if c.is_midi_clip and "notes" in obj:
-            self._set_notes(c, obj["notes"])
+            target = obj["notes"]
+            if base is not None and cur is not None and "notes" in cur:
+                target = merge_notes(base.get("notes", []), target, cur["notes"])
+            self._set_notes(c, target)
 
     def _clamp(self, param, v):
         return max(param.min, min(param.max, float(v)))
@@ -299,13 +365,13 @@ class AbletonCollab(ControlSurface):
     def _set_notes(self, c, target):
         have = {}
         for n in c.get_all_notes_extended():
-            k = canon([int(n.pitch), r(n.start_time), r(n.duration), r(n.velocity), bool(n.mute),
-                       r(getattr(n, "probability", 1.0)), r(getattr(n, "velocity_deviation", 0.0)),
-                       r(getattr(n, "release_velocity", 64.0))])
+            k = nkey([n.pitch, n.start_time, n.duration, n.velocity, n.mute,
+                      getattr(n, "probability", 1.0), getattr(n, "velocity_deviation", 0.0),
+                      getattr(n, "release_velocity", 64.0)])
             have.setdefault(k, []).append(n.note_id)
         want = {}
         for n in target:
-            want.setdefault(canon(n), []).append(n)
+            want.setdefault(nkey(n), []).append(n)
         remove, add = [], []
         for k, ids in have.items():
             keep = len(want.get(k, []))
@@ -382,7 +448,7 @@ class AbletonCollab(ControlSurface):
             elif op == "apply":
                 key = msg.get("key")
                 try:
-                    self._apply(key, msg.get("obj") or {})
+                    self._apply(key, msg.get("obj") or {}, msg.get("base"), bool(msg.get("win", True)))
                     self._dirty.pop(key, None)
                     now = None
                     try:

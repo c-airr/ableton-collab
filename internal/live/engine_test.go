@@ -81,12 +81,52 @@ func (f *fakeLive) serve() {
 				key := m["key"].(string)
 				obj := Obj(m["obj"].(map[string]any))
 				f.mu.Lock()
+				if base, ok := m["base"].(map[string]any); ok {
+					win, _ := m["win"].(bool)
+					obj = fakeMerge(f.items[key], obj, Obj(base), win)
+				}
 				f.items[key] = obj
 				f.mu.Unlock()
-				f.send(map[string]any{"t": "applied", "id": m["id"], "key": key, "ok": true})
+				f.send(map[string]any{"t": "applied", "id": m["id"], "key": key, "ok": true, "obj": obj})
 			}
 		}
 	}
+}
+
+// fakeMerge: jak _apply w skrypcie z base - roznica base -> obj na cur.
+func fakeMerge(cur, obj, base Obj, win bool) Obj {
+	if cur == nil || cur["empty"] == true {
+		return obj
+	}
+	same := func(a, b any) bool { return Hash(Obj{"v": a}) == Hash(Obj{"v": b}) }
+	out := copyObj(cur)
+	for f, v := range obj {
+		if f == "notes" {
+			continue
+		}
+		bv, inBase := base[f]
+		if inBase && same(bv, v) {
+			continue
+		}
+		if cv, ok := cur[f]; ok && inBase && !same(cv, bv) && !same(cv, v) && !win {
+			continue
+		}
+		out[f] = v
+	}
+	if hn, ok := obj["notes"].([]any); ok {
+		bn, _ := base["notes"].([]any)
+		cn, _ := cur["notes"].([]any)
+		out["notes"] = mergeNotes(bn, hn, cn)
+	}
+	return norm(out)
+}
+
+// quiet: uzytkownik zmienil cos w Live, ale skrypt jeszcze tego nie zglosil
+// (odczekuje DEBOUNCE).
+func (f *fakeLive) quiet(key string, obj Obj) {
+	f.mu.Lock()
+	f.items[key] = obj
+	f.mu.Unlock()
 }
 
 // edit: uzytkownik zmienia cos w Live (skrypt zglasza zmiane).
@@ -167,70 +207,86 @@ func TestLiveChangeReachesOther(t *testing.T) {
 	waitFor(t, "A got B's tempo", func() bool { return Hash(a.live.get("tempo")) == Hash(Obj{"bpm": 128.0}) })
 }
 
-func TestLiveConcurrentEditAsks(t *testing.T) {
+func twoEngines(t *testing.T) (la, lb *fakeLive, ea, eb *Engine) {
 	root := filepath.Join(t.TempDir(), ".abcollab")
 	tracks := []string{"Hats"}
 	os.MkdirAll(filepath.Join(root, "devices", "AAA"), 0o755)
 	os.MkdirAll(filepath.Join(root, "devices", "BBB"), 0o755)
-	la := newFakeLive(t, tracks, map[string]Obj{"clip/0/s0": clip(60)})
-	lb := newFakeLive(t, tracks, map[string]Obj{"clip/0/s0": clip(60)})
+	la = newFakeLive(t, tracks, map[string]Obj{"clip/0/s0": clip(60)})
+	lb = newFakeLive(t, tracks, map[string]Obj{"clip/0/s0": clip(60)})
 	ca, cb := Dial(la.addr(), "tok"), Dial(lb.addr(), "tok")
-	defer ca.Close()
-	defer cb.Close()
 	names := func(d string) string { return "user-" + d }
-	ea := Start(ca, root, "AAA", "", names, func() []string { return tracks })
-	eb := Start(cb, root, "BBB", "", names, func() []string { return tracks })
-	defer ea.Close()
-	defer eb.Close()
-	aConf, bConf := drain(ea, "conflict"), drain(eb, "conflict")
+	ea = Start(ca, root, "AAA", "", names, func() []string { return tracks })
+	eb = Start(cb, root, "BBB", "", names, func() []string { return tracks })
+	t.Cleanup(func() { ea.Close(); eb.Close(); ca.Close(); cb.Close() })
 	waitFor(t, "matched", func() bool { return ea.Status().Matched && eb.Status().Matched })
-
-	// rownoczesne edycje: obie operacje maja te sama baze
-	la.edit("clip/0/s0", clip(60, 62))
-	lb.edit("clip/0/s0", clip(60, 67))
-	waitFor(t, "conflicts on both sides", func() bool { return aConf() != nil && bConf() != nil })
-	if n := aConf(); Hash(n.Mine) != Hash(clip(60, 62)) || Hash(n.Theirs) != Hash(clip(60, 67)) || n.From != "user-BBB" {
-		t.Fatalf("A's conflict: %+v", n)
-	}
-	// nic nie zostalo nadpisane bez pytania
-	if Hash(la.get("clip/0/s0")) != Hash(clip(60, 62)) || Hash(lb.get("clip/0/s0")) != Hash(clip(60, 67)) {
-		t.Fatal("a concurrent edit overwrote the other one")
-	}
-	// A wybiera wersje B; B dostaje rozstrzygniecie i zamyka konflikt
-	ea.Resolve("clip/0/s0", false)
-	waitFor(t, "A applied B's version", func() bool { return Hash(la.get("clip/0/s0")) == Hash(clip(60, 67)) })
-	waitFor(t, "B stays on its version", func() bool { return Hash(lb.get("clip/0/s0")) == Hash(clip(60, 67)) })
-	// po rozstrzygnieciu dalsze zmiany plyna normalnie
-	lb.edit("clip/0/s0", clip(60, 67, 70))
-	waitFor(t, "sync after resolve", func() bool { return Hash(la.get("clip/0/s0")) == Hash(clip(60, 67, 70)) })
+	return
 }
 
-func TestLiveBothResolveDifferently(t *testing.T) {
-	root := filepath.Join(t.TempDir(), ".abcollab")
-	tracks := []string{"Hats"}
-	os.MkdirAll(filepath.Join(root, "devices", "AAA"), 0o755)
-	os.MkdirAll(filepath.Join(root, "devices", "BBB"), 0o755)
-	la := newFakeLive(t, tracks, map[string]Obj{"clip/0/s0": clip(60)})
-	lb := newFakeLive(t, tracks, map[string]Obj{"clip/0/s0": clip(60)})
-	ca, cb := Dial(la.addr(), "tok"), Dial(lb.addr(), "tok")
-	defer ca.Close()
-	defer cb.Close()
-	names := func(d string) string { return d }
-	ea := Start(ca, root, "AAA", "", names, func() []string { return tracks })
-	eb := Start(cb, root, "BBB", "", names, func() []string { return tracks })
-	defer ea.Close()
-	defer eb.Close()
+// Dwie osoby graja naraz w tym samym klipie - nuty sie sumuja, bez pytania.
+func TestLiveConcurrentNotesMerge(t *testing.T) {
+	la, lb, ea, eb := twoEngines(t)
 	aConf, bConf := drain(ea, "conflict"), drain(eb, "conflict")
-	waitFor(t, "matched", func() bool { return ea.Status().Matched && eb.Status().Matched })
-	la.edit("clip/0/s0", clip(1))
-	lb.edit("clip/0/s0", clip(2))
-	waitFor(t, "conflicts", func() bool { return aConf() != nil && bConf() != nil })
-	// kazdy wybiera swoja - wygrywa mniejsze ID (AAA)
-	ea.Resolve("clip/0/s0", true)
-	eb.Resolve("clip/0/s0", true)
-	waitFor(t, "both on AAA's version", func() bool {
-		return Hash(la.get("clip/0/s0")) == Hash(clip(1)) && Hash(lb.get("clip/0/s0")) == Hash(clip(1))
+	la.edit("clip/0/s0", clip(60, 62))
+	lb.edit("clip/0/s0", clip(60, 67))
+	want := Hash(clip(60, 62, 67))
+	waitFor(t, "both have both melodies", func() bool {
+		return Hash(la.get("clip/0/s0")) == want && Hash(lb.get("clip/0/s0")) == want
 	})
+	if aConf() != nil || bConf() != nil {
+		t.Fatal("concurrent notes asked instead of merging")
+	}
+	// potem dalsze zmiany (tez usuwanie) plyna normalnie
+	lb.edit("clip/0/s0", clip(60, 67))
+	waitFor(t, "removal reaches A", func() bool { return Hash(la.get("clip/0/s0")) == Hash(clip(60, 67)) })
+}
+
+// Kilka nut w ciagu sekundy - kazda zmiana dochodzi, ostatni stan jest u obu.
+func TestLiveRapidChanges(t *testing.T) {
+	la, lb, ea, eb := twoEngines(t)
+	aConf, bConf := drain(ea, "conflict"), drain(eb, "conflict")
+	ps := []float64{60}
+	for p := 61.0; p <= 68; p++ {
+		ps = append(ps, p)
+		la.edit("clip/0/s0", clip(ps...))
+		time.Sleep(50 * time.Millisecond)
+	}
+	want := Hash(clip(ps...))
+	waitFor(t, "B has all notes", func() bool { return Hash(lb.get("clip/0/s0")) == want })
+	time.Sleep(700 * time.Millisecond)
+	if Hash(la.get("clip/0/s0")) != want || Hash(lb.get("clip/0/s0")) != want {
+		t.Fatal("states drifted after rapid changes")
+	}
+	if aConf() != nil || bConf() != nil {
+		t.Fatal("rapid changes from one person caused a conflict")
+	}
+}
+
+// Zmiana przychodzi, gdy moja praca nie zostala jeszcze zgloszona - zostaje
+// i dochodzi do drugiej strony.
+func TestLiveRemoteKeepsUnsentWork(t *testing.T) {
+	la, lb, _, _ := twoEngines(t)
+	lb.quiet("clip/0/s0", clip(60, 70))
+	la.edit("clip/0/s0", clip(60, 62))
+	want := Hash(clip(60, 62, 70))
+	waitFor(t, "B kept its note and got A's", func() bool { return Hash(lb.get("clip/0/s0")) == want })
+	waitFor(t, "A got B's unsent note", func() bool { return Hash(la.get("clip/0/s0")) == want })
+}
+
+// Ta sama wlasciwosc zmieniona naraz - u obu wygrywa mniejsze ID (AAA).
+func TestLiveConcurrentFieldTieBreak(t *testing.T) {
+	la, lb, _, _ := twoEngines(t)
+	ca, cb := clip(60), clip(60)
+	ca["name"], cb["name"] = "from A", "from B"
+	la.edit("clip/0/s0", ca)
+	lb.edit("clip/0/s0", cb)
+	waitFor(t, "both named by AAA", func() bool {
+		return la.get("clip/0/s0")["name"] == "from A" && lb.get("clip/0/s0")["name"] == "from A"
+	})
+	time.Sleep(700 * time.Millisecond)
+	if lb.get("clip/0/s0")["name"] != "from A" || la.get("clip/0/s0")["name"] != "from A" {
+		t.Fatal("names drifted")
+	}
 }
 
 func TestLiveDifferentSetOpen(t *testing.T) {

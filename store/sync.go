@@ -94,45 +94,127 @@ func (p *Project) WorkingChanges() ([]als.Change, bool, error) {
 }
 
 // Commit zapisuje plik roboczy jako nowa wersje. Zwraca nil, gdy wzgledem
-// mojej wersji nie ma zmian (sam szum zapisu to brak zmian).
+// wersji, z ktorej pochodzi tresc pliku, nie ma zmian (sam szum zapisu to
+// brak zmian).
 func (p *Project) Commit() (*Version, error) {
+	cr, err := p.commit(nil, false)
+	if err != nil {
+		return nil, err
+	}
+	if len(cr.conflicts) > 0 {
+		return nil, fmt.Errorf("the saved set conflicts with newer changes (%d) - use Get changes to choose", len(cr.conflicts))
+	}
+	return cr.v, nil
+}
+
+type commitResult struct {
+	v         *Version // nowa wersja z pliku roboczego (nil - bez zmian)
+	merged    *Version // scalenie z moim head (plik pochodzil ze starszej wersji)
+	warnings  []als.Warning
+	conflicts []als.Conflict // nic nie zapisane - commit z rozstrzygnieciami dokonczy
+}
+
+// fileParent: wersja, z ktorej pochodzi tresc pliku roboczego - wg znacznika
+// w secie (patrz marker.go); sety bez znacznika maja wlasna linie ("") od
+// Loaded.
+func (p *Project) fileParent(vs map[string]*Version, doc *als.Doc) (marker, parent string) {
+	marker = docBase(doc)
+	if id := p.lineage()[marker]; id != "" && vs[id] != nil {
+		return marker, id
+	}
+	if marker != "" && vs[marker] != nil {
+		return marker, marker
+	}
+	return marker, p.Loaded()
+}
+
+// commit: plik roboczy jako wersja z rodzicem = wersja, z ktorej pochodzi jego
+// tresc. Gdy to nie moj head (Live nie przeladowal podmienionego pliku albo
+// dostawal zmiany na zywo), od razu scalamy z head - zapis starej tresci nie
+// cofa zmian, ktorych Live nie mial. writeWorking: wynik scalenia do pliku
+// roboczego (Live nie ma go otwartego).
+func (p *Project) commit(res map[string]als.Resolution, writeWorking bool) (*commitResult, error) {
+	cr := &commitResult{}
 	data, doc, err := p.readWorking()
 	if err != nil {
 		return nil, err
 	}
-	head := p.Loaded()
-	var parents, summary []string
-	if head == "" {
-		summary = []string{"first version"}
-	} else {
-		vs, err := p.Versions()
-		if err != nil {
-			return nil, err
-		}
-		hv := vs[head]
-		if hv == nil {
-			return nil, fmt.Errorf("my version %s does not exist", Short(head))
-		}
-		hdoc, err := p.LoadDoc(hv)
-		if err != nil {
-			return nil, err
-		}
-		ch := diffDocs(hdoc, doc)
-		if len(ch) == 0 {
-			return nil, nil
-		}
-		parents = []string{head}
-		summary = summarize("", ch)
-	}
-	return p.writeVersion(data, parents, summary)
-}
-
-// writeVersion zapisuje obiekt, wersje i przestawia head - w tej kolejnosci,
-// zeby lokalnie head nigdy nie wskazywal na niekompletna wersje.
-func (p *Project) writeVersion(data []byte, parents, summary []string) (*Version, error) {
-	if err := p.ensureMe(); err != nil {
+	vs, err := p.Versions()
+	if err != nil {
 		return nil, err
 	}
+	head := p.Head()
+	marker, parent := p.fileParent(vs, doc)
+	if parent == "" {
+		v, err := p.writeVersion(data, nil, []string{"first version"})
+		if err != nil {
+			return nil, err
+		}
+		cr.v = v
+		return cr, p.setLineage(marker, v.ID)
+	}
+	pv := vs[parent]
+	if pv == nil {
+		return nil, fmt.Errorf("my version %s does not exist", Short(parent))
+	}
+	pdoc, err := p.LoadDoc(pv)
+	if err != nil {
+		return nil, err
+	}
+	ch := diffDocs(pdoc, doc)
+	if len(ch) == 0 {
+		return cr, nil
+	}
+	behind := head != "" && vs[head] != nil && !IsAncestor(vs, head, parent)
+	if behind {
+		// najpierw sprawdzamy, czy scalenie sie uda - przy konflikcie nic nie
+		// zapisujemy (commit z rozstrzygnieciami zrobi to od nowa)
+		base := MergeBase(vs, parent, head)
+		if base == "" {
+			return nil, fmt.Errorf("no common history with my version %s", Short(head))
+		}
+		bdoc, err := p.LoadDoc(vs[base])
+		if err != nil {
+			return nil, err
+		}
+		hdoc, err := p.LoadDoc(vs[head])
+		if err != nil {
+			return nil, err
+		}
+		mr, err := als.MergeWith(bdoc, doc, hdoc, res)
+		if err != nil {
+			return nil, err
+		}
+		if len(mr.Conflicts) > 0 {
+			cr.conflicts = mr.Conflicts
+			return cr, nil
+		}
+	}
+	v, err := p.writeVersion(data, []string{parent}, summarize("", ch))
+	if err != nil {
+		return nil, err
+	}
+	cr.v = v
+	if err := p.setLineage(marker, v.ID); err != nil {
+		return nil, err
+	}
+	if !behind {
+		return cr, nil
+	}
+	vs[v.ID] = v
+	m, conflicts, warns, err := p.merge(vs, v.ID, head, p.Me, res, writeWorking)
+	if err != nil {
+		return nil, fmt.Errorf("merging with my newer version: %w", err)
+	}
+	if len(conflicts) > 0 { // sprawdzone wyzej - nie powinno sie zdarzyc
+		cr.conflicts = conflicts
+		return cr, nil
+	}
+	cr.merged, cr.warnings = m, warns
+	return cr, nil
+}
+
+func (p *Project) newVersion(data []byte, parents, summary []string) *Version {
 	sum := sha256.Sum256(data)
 	v := &Version{
 		Object:  hex.EncodeToString(sum[:]),
@@ -142,13 +224,26 @@ func (p *Project) writeVersion(data []byte, parents, summary []string) (*Version
 		Time:    p.now(),
 		Summary: summary,
 	}
+	v.ID = versionID(v)
+	return v
+}
+
+// writeVersion zapisuje obiekt, wersje i przestawia head - w tej kolejnosci,
+// zeby lokalnie head nigdy nie wskazywal na niekompletna wersje.
+func (p *Project) writeVersion(data []byte, parents, summary []string) (*Version, error) {
+	return p.saveVersion(p.newVersion(data, parents, summary), data)
+}
+
+func (p *Project) saveVersion(v *Version, data []byte) (*Version, error) {
+	if err := p.ensureMe(); err != nil {
+		return nil, err
+	}
 	obj := p.objectPath(v)
 	if _, err := os.Stat(obj); err != nil {
 		if err := writeFileAtomic(obj, data); err != nil {
 			return nil, err
 		}
 	}
-	v.ID = versionID(v)
 	if err := writeJSON(filepath.Join(p.devDir(p.Me.ID), "versions", v.ID+".json"), v); err != nil {
 		return nil, err
 	}
@@ -288,12 +383,21 @@ func (p *Project) pull(res map[string]als.Resolution, live bool) (*PullResult, e
 	r := &PullResult{Live: live}
 	me := p.Head()
 	if me != "" {
-		v, err := p.Commit()
+		cr, err := p.commit(res, !live)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
-		if v != nil {
-			r.Committed, me = v, v.ID
+		if cr != nil {
+			if len(cr.conflicts) > 0 {
+				r.Conflicts, r.ConflictWith = cr.conflicts, p.Me
+				return r, nil
+			}
+			r.Committed = cr.v
+			if cr.merged != nil {
+				r.Merged = append(r.Merged, cr.merged)
+				r.Warnings = append(r.Warnings, cr.warnings...)
+			}
+			me = p.Head()
 		}
 	}
 	vs, err := p.Versions()
@@ -360,11 +464,7 @@ func (p *Project) checkout(v *Version) error {
 	if err != nil {
 		return err
 	}
-	// set moze lezec w podfolderze, ktory u nas jeszcze nie istnieje
-	if err := writableDir(filepath.Dir(p.WorkingPath())); err != nil {
-		return err
-	}
-	if err := writeFileAtomic(p.WorkingPath(), data); err != nil {
+	if err := p.writeWorkingVersion(data, v.ID); err != nil {
 		return err
 	}
 	if err := p.setHead(v.ID); err != nil {
@@ -482,20 +582,21 @@ func (p *Project) merge(vs map[string]*Version, me, h string, d Device, res map[
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	prefix := "merge with " + d.Name
+	if d.ID == p.Me.ID {
+		prefix = "merge with my newer version"
+	}
+	v := p.newVersion(data, []string{me, h}, summarize(prefix, diffDocs(docs[1], mr.Doc)))
 	// Najpierw plik roboczy, potem wersja: gdyby zapis pliku sie nie udal
 	// (np. zablokowany), head zostaje na mojej wersji i nastepny commit nie
 	// uzna starego pliku za "cofniecie" zmian drugiej strony.
 	if writeWorking {
-		if err := writableDir(filepath.Dir(p.WorkingPath())); err != nil {
-			return nil, nil, nil, err
-		}
-		if err := writeFileAtomic(p.WorkingPath(), data); err != nil {
+		if err := p.writeWorkingVersion(data, v.ID); err != nil {
 			return nil, nil, nil, err
 		}
 	}
-	summary := summarize("merge with "+d.Name, diffDocs(docs[1], mr.Doc))
 	loaded := p.Loaded()
-	v, err := p.writeVersion(data, []string{me, h}, summary)
+	v, err = p.saveVersion(v, data)
 	if err != nil {
 		return nil, nil, nil, err
 	}

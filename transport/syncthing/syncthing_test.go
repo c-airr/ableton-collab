@@ -156,7 +156,7 @@ func TestPairing(t *testing.T) {
 		return err == nil && len(r.FastForwarded) == 1
 	})
 	got, _ := os.ReadFile(gp.WorkingPath())
-	if !bytes.Equal(got, set) {
+	if !store.SameSet(got, set) {
 		t.Error("set u goscia rozni sie od seta hosta")
 	}
 

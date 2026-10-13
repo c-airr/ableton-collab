@@ -36,6 +36,7 @@ type Msg struct {
 	OK      bool           `json:"ok"`
 	Err     string         `json:"err"`
 	Session string         `json:"session"` // znacznik sesji zapisany w secie
+	V       int            `json:"v"`       // wersja skryptu (hello)
 }
 
 // Client: polaczenie ze skryptem w Live (laczy sie ponownie samo, np. gdy
@@ -104,7 +105,7 @@ func (c *Client) loop() {
 			var m Msg
 			if json.Unmarshal(sc.Bytes(), &m) == nil {
 				if m.T == "hello" {
-					c.emit(Msg{T: "up", Tracks: m.Tracks})
+					c.emit(Msg{T: "up", Tracks: m.Tracks, V: m.V})
 				}
 				c.emit(m)
 			}
