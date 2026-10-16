@@ -71,4 +71,4 @@ Releases are built by GitHub Actions on a `v*` tag.
 
 ## License
 
-MIT. Syncthing is MPL-2.0 and is downloaded unmodified from its official releases.
+Apache License 2.0. Syncthing is MPL-2.0 and is downloaded unmodified from its official releases.
