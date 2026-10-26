@@ -107,17 +107,45 @@ func (m *merger) node(b, o, t *Node) (*Node, error) {
 	}
 	res := &Node{Name: o.Name}
 	// atrybuty: 3-way per atrybut
-	for _, a := range o.Attrs {
-		bv, _ := b.Attr(a.Name)
-		tv, tok := t.Attr(a.Name)
-		v := a.Value
-		noise := isNoiseAttr(o.Name, a.Name)
-		if tok && !noise && a.Value == bv && tv != bv {
-			v = tv
-		} else if tok && !noise && a.Value != bv && tv != bv && tv != a.Value {
-			return nil, fmt.Errorf("%s@%s: both sides changed", o.Name, a.Name)
+	attrNames := make([]string, 0, len(b.Attrs)+len(o.Attrs)+len(t.Attrs))
+	seenAttrs := make(map[string]bool, cap(attrNames))
+	for _, attrs := range [][]Attr{o.Attrs, t.Attrs, b.Attrs} {
+		for _, a := range attrs {
+			if !seenAttrs[a.Name] {
+				seenAttrs[a.Name] = true
+				attrNames = append(attrNames, a.Name)
+			}
 		}
-		res.Attrs = append(res.Attrs, Attr{a.Name, v})
+	}
+	for _, name := range attrNames {
+		bv, bok := b.Attr(name)
+		ov, ook := o.Attr(name)
+		tv, tok := t.Attr(name)
+		if isNoiseAttr(o.Name, name) {
+			if ook {
+				res.Attrs = append(res.Attrs, Attr{name, ov})
+			}
+			continue
+		}
+		same := func(x string, xok bool, y string, yok bool) bool {
+			return xok == yok && (!xok || x == y)
+		}
+		switch {
+		case same(ov, ook, tv, tok):
+			if ook {
+				res.Attrs = append(res.Attrs, Attr{name, ov})
+			}
+		case same(ov, ook, bv, bok):
+			if tok {
+				res.Attrs = append(res.Attrs, Attr{name, tv})
+			}
+		case same(tv, tok, bv, bok):
+			if ook {
+				res.Attrs = append(res.Attrs, Attr{name, ov})
+			}
+		default:
+			return nil, fmt.Errorf("%s@%s: both sides changed", o.Name, name)
+		}
 	}
 	res.Text = o.Text
 	if o.Text == b.Text {
